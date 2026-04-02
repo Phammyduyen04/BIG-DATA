@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell.exe -Command \"& ''C:\\\\Users\\\\MY DUYEN\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe'' ''D:\\\\SUBJECT\\\\BIG-DATA\\\\Crawl-draft\\\\binance_crawler.py''\")",
+      "Bash(powershell.exe -Command \"[System.Environment]::SetEnvironmentVariable\\(''PYTHONUTF8'',''1'',''Process''\\); & ''C:\\\\Users\\\\MY DUYEN\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe'' -X utf8 ''D:\\\\SUBJECT\\\\BIG-DATA\\\\Crawl-draft\\\\binance_crawler.py''\")"
+    ]
+  }
+}
