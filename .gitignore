@@ -1,0 +1,29 @@
+# Environment
+.env
+
+# Data (too large for git)
+data/trades/
+*.csv
+
+
+.claude
+
+# Logs
+logs/
+
+# Progress checkpoints
+progress.json
+futures_progress.json
+meta.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db

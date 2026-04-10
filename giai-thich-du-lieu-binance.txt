@@ -1,0 +1,86 @@
+🔹 1. Klines (OHLCV)
+Dữ liệu nến:
+Open, High, Low, Close, Volume
+Theo timeframe (1m, 5m, 1h…)
+
+👉 Dùng:
+
+Phân tích kỹ thuật
+Machine Learning
+🔹 2. Trades
+Từng giao dịch riêng lẻ
+Bao gồm:
+price
+quantity
+time
+
+👉 Đây là:
+
+dữ liệu “thô nhất”
+
+🔹 3. AggTrades (Aggregated Trades)
+Gộp nhiều trades lại
+
+👉 Khác Trades:
+
+Trades = từng lệnh nhỏ
+AggTrades = gộp lại cho nhẹ dữ liệu
+
+👉 Dùng:
+
+Giảm tải hệ thống
+Phân tích nhanh
+🔹 4. Order Book (Depth)
+Danh sách:
+Bid (mua)
+Ask (bán)
+
+👉 Dùng:
+
+Phân tích cung cầu
+Xác định vùng giá mạnh
+🔹 5. Ticker 24h
+Tổng hợp trong 24h:
+Giá cao nhất
+Giá thấp nhất
+Volume
+% thay đổi
+
+👉 Dùng:
+
+Dashboard
+Xem trend nhanh
+🔹 6. Book Ticker
+Chỉ lấy:
+Best bid (giá mua cao nhất)
+Best ask (giá bán thấp nhất)
+
+👉 Dùng:
+
+Trading nhanh (low latency)
+🔹 7. Mark Price (Futures)
+Giá “chuẩn” của thị trường futures
+
+👉 Dùng:
+
+Tránh thao túng giá
+Tính liquidation
+🔹 8. Funding Rate (Futures)
+Phí giữa Long và Short
+
+👉 Ý nghĩa:
+
+Dương → Long trả phí
+Âm → Short trả phí
+
+👉 Đọc được:
+
+tâm lý thị trường
+
+🔹 9. Liquidations (Futures)
+Các lệnh bị cháy (force close)
+
+👉 Dùng:
+
+Xác định vùng rủi ro
+Phân tích panic sell
