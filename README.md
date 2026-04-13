@@ -1,131 +1,135 @@
-# Binance Historical Data Fetcher
+# Binance Data Streamer
 
-Stream toàn bộ dữ liệu lịch sử từ Binance về máy local.
-
-**Dữ liệu**: 1,424 spot symbols + 609 futures symbols  
-**Dung lượng**: ~2.5 GB / ngày  
-**Thời gian chạy**: ~8–10 tiếng (cho 1 ngày lịch sử)
+Thu thập dữ liệu real-time và historical từ Binance cho **100 đồng crypto phổ biến nhất** (theo 24h volume), kết hợp REST API và WebSocket đồng thời.
 
 ---
 
-## Yêu cầu
+## Dữ liệu thu thập
 
-- Python 3.10+
-- Binance API Key (tạo tại [binance.com/en/my/settings/api-management](https://www.binance.com/en/my/settings/api-management))
+| Loại | Nguồn | Tần suất | Lưu tại |
+|------|-------|----------|---------|
+| **Klines 1m** | REST (historical) + WebSocket (real-time) | Mỗi phút | `data/klines/` |
+| **Order Book** | REST (snapshot) + WebSocket (top-20, 1s) | Mỗi giây | `data/orderbook/` |
+| **Ticker 24h** | REST (snapshot) + WebSocket (rolling) | Real-time | `data/ticker24h/` |
+
+Định dạng lưu: **JSON Lines** (`.jsonl`) – mỗi dòng là 1 JSON object hoàn chỉnh.
+
+---
+
+## Cấu trúc project
+
+```
+DATA-STREAMING/
+├── .env                  # API keys (không commit)
+├── .gitignore
+├── requirements.txt
+├── config.py             # Cấu hình tập trung
+├── main.py               # Entry point
+├── rest_collector.py     # Lấy dữ liệu historical qua REST API
+├── ws_collector.py       # Stream real-time qua WebSocket
+├── storage.py            # Ghi dữ liệu ra file JSONL
+├── data/
+│   ├── klines/           # <SYMBOL>_klines_1m.jsonl   (100 files)
+│   ├── orderbook/        # <SYMBOL>_orderbook.jsonl   (100 files)
+│   └── ticker24h/        # <SYMBOL>_ticker24h.jsonl   (100 files)
+└── logs/                 # Log file theo ngày
+```
 
 ---
 
 ## Cài đặt
 
-**1. Clone repo**
-```bash
-git clone <repo-url>
-cd <repo-folder>
-```
-
-**2. Cài thư viện**
 ```bash
 pip install -r requirements.txt
 ```
 
-**3. Tạo file `.env`**
-```bash
-cp .env.example .env
+Tạo file `.env`:
+
+```env
+BINANCE_API_KEY=your_api_key
+BINANCE_SECRET_KEY=your_secret_key
 ```
-Mở `.env` và điền API key:
-```
-BINANCE_API_KEY=your_api_key_here
-BINANCE_SECRET_KEY=your_secret_key_here
-```
-
----
-
-## Cấu hình
-
-Mở từng script và chỉnh phần `CONFIG` ở đầu file:
-
-| File | Tham số | Mặc định | Ý nghĩa |
-|------|---------|----------|---------|
-| `fetch_binance_data.py` | `DAYS_BACK` | `1` | Số ngày lịch sử cần lấy |
-| `fetch_binance_data.py` | `INTERVAL` | `1m` | Timeframe klines (`1m`, `5m`, `1h`, `1d`...) |
-| `fetch_binance_data.py` | `USDT_ONLY` | `False` | `True` = chỉ lấy cặp USDT (~500 symbols, nhanh hơn) |
-| `fetch_binance_data.py` | `FETCH_KLINES` | `True` | Bật/tắt tải Klines |
-| `fetch_binance_data.py` | `FETCH_AGG_TRADES` | `True` | Bật/tắt tải AggTrades |
-| `fetch_binance_vision.py` | `DAYS_BACK` | `1` | Số ngày lịch sử Raw Trades |
-| `fetch_futures.py` | `DAYS_BACK` | `1` | Số ngày lịch sử Futures |
 
 ---
 
 ## Chạy
 
-Mở **4 terminal riêng biệt** và chạy song song:
-
-**Terminal 1** — Klines + AggTrades (chạy lâu nhất ~7–8 tiếng):
 ```bash
-python fetch_binance_data.py
+python main.py
 ```
 
-**Terminal 2** — Ticker 24h + Order Book snapshot:
-```bash
-python fetch_snapshot.py
+Streamer sẽ tự dừng sau **24 giờ**. Nhấn `Ctrl+C` để dừng sớm.
+
+### Tuỳ chỉnh trong `config.py`
+
+| Tham số | Mặc định | Mô tả |
+|---------|----------|-------|
+| `TOP_N_SYMBOLS` | `100` | Số lượng symbols muốn stream |
+| `KLINE_INTERVAL` | `1m` | Timeframe nến |
+| `KLINES_LOOKBACK_LIMIT` | `1440` | Số nến lịch sử (1440 = 24h) |
+| `DEPTH_LEVELS` | `20` | Số mức giá order book |
+| `STREAM_DURATION_SECONDS` | `86400` | Thời gian chạy (giây) |
+| `REST_REFRESH_INTERVAL` | `60` | Chu kỳ refresh REST snapshot (giây) |
+
+---
+
+## Kiến trúc
+
+```
+Khởi động
+    │
+    ├─► [REST] Khám phá top 100 symbols (by 24h volume)
+    │
+    ├─► [REST] Fetch lịch sử 24h ──────────────────────────┐
+    │         100 symbols × 1440 nến = 144,000 records     │
+    │                                                       ├─► Ghi JSONL
+    ├─► [WS]  2 connections × 150 streams mỗi connection   │
+    │         kline_1m + depth20@1000ms + ticker            │
+    │         (300 streams tổng)                           ─┘
+    │
+    └─► [REST] Refresh snapshot mỗi 60 giây
 ```
 
-**Terminal 3** — Raw Trades từ data.binance.vision (~10–15 phút):
-```bash
-python fetch_binance_vision.py
-```
+**Phân biệt historical vs real-time** qua field `source`:
 
-**Terminal 4** — Mark Price + Funding Rate Futures (~1–2 tiếng):
-```bash
-python fetch_futures.py
-```
+| Giá trị | Ý nghĩa |
+|---------|---------|
+| `rest_historical` | Dữ liệu lịch sử lấy lúc khởi động |
+| `rest_snapshot` | Snapshot định kỳ qua REST |
+| `websocket` | Dữ liệu real-time qua WebSocket |
 
-**Kiểm tra tiến độ** (bất kỳ lúc nào):
-```bash
-python check_progress.py
+---
+
+## Đọc dữ liệu
+
+```python
+import pandas as pd
+
+# Klines
+klines = pd.read_json("data/klines/BTCUSDT_klines_1m.jsonl", lines=True)
+
+# Phân tách historical vs real-time
+historical = klines[klines["source"] == "rest_historical"]
+realtime   = klines[klines["source"] == "websocket"]
+
+# Chỉ lấy nến đã đóng hoàn chỉnh
+closed = klines[klines["is_closed"] == True]
+
+# Order book
+book = pd.read_json("data/orderbook/BTCUSDT_orderbook.jsonl", lines=True)
+
+# Ticker 24h
+ticker = pd.read_json("data/ticker24h/BTCUSDT_ticker24h.jsonl", lines=True)
 ```
 
 ---
 
-## Resume nếu bị ngắt
+## Ước tính dữ liệu sau 24h (100 symbols)
 
-Script tự động lưu checkpoint vào `progress.json` và `futures_progress.json`.  
-Nếu bị ngắt giữa chừng, **chạy lại đúng lệnh cũ** — script sẽ bỏ qua các symbols đã xong và tiếp tục từ chỗ dừng.
+| Thư mục | Records | Dung lượng |
+|---------|--------:|----------:|
+| `klines/` | ~288,000 | ~120 MB |
+| `orderbook/` | ~8,700,000 | ~13 GB |
+| `ticker24h/` | ~8,700,000 | ~4 GB |
 
----
-
-## Cấu trúc output
-
-```
-data/
-├── klines/                          # Klines OHLCV 1m
-│   └── {SYMBOL}/{SYMBOL}_1m_*.csv
-├── agg_trades/                      # Aggregate Trades
-│   └── {SYMBOL}/{SYMBOL}_agg_trades_*.csv
-├── trades/                          # Raw Trades (data.binance.vision)
-│   └── {SYMBOL}/{SYMBOL}-trades-*.csv
-├── order_book/                      # Order Book snapshot
-│   └── {SYMBOL}/{SYMBOL}_depth_*.csv
-├── ticker_24h/                      # Ticker 24h snapshot
-│   └── ticker_24h_*.csv
-└── futures/
-    ├── mark_price/                  # Mark Price Klines 1m
-    │   └── {SYMBOL}/{SYMBOL}_mark_1m_*.csv
-    └── funding_rate/                # Funding Rate (mỗi 8h)
-        └── {SYMBOL}/{SYMBOL}_funding_*.csv
-```
-
----
-
-## Mô tả dữ liệu
-
-Xem [DATA_DICTIONARY.md](DATA_DICTIONARY.md) để biết ý nghĩa từng trường dữ liệu.
-
----
-
-## Lưu ý
-
-- **Rate limit**: Script tự động nghỉ đúng batch để không bị Binance chặn (1200 weight/phút)
-- **data.binance.vision**: Thường upload trễ 1–2 ngày — một số symbols có thể 404, chạy lại sau 1–2 ngày
-- **Liquidations**: Cần bật quyền **Futures** trong Binance API key, sau đó đặt `FETCH_LIQUIDATIONS = True` trong `fetch_futures.py`
-- **Dung lượng**: ~2.5 GB/ngày → cần ổ cứng đủ lớn nếu lấy nhiều ngày
+> Order book và ticker cập nhật liên tục (1 lần/giây × 100 symbols × 86,400 giây).

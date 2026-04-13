@@ -1,28 +1,32 @@
-# Environment
-.env
-
-# Data (too large for git)
-data/trades/
-*.csv
-
-
-.claude
-
-# Logs
-logs/
-
-# Progress checkpoints
-progress.json
-futures_progress.json
-meta.json
-
 # Python
 __pycache__/
 *.py[cod]
 *.pyo
-.venv/
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+*.env
+
+# Data output
+data/
+
+# Logs
+logs/
+
+# Virtual environment
 venv/
+.venv/
 env/
+
+# IDE
+.vscode/
+.idea/
+*.iml
 
 # OS
 .DS_Store
