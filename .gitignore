@@ -30,4 +30,7 @@ env/
 
 # OS
 .DS_Store
-Thumbs.db
+# Local Data & Infra
+minio_data/
+.gemini/
+

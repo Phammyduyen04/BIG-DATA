@@ -1,0 +1,42 @@
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 1G
+      - --overprovisioned
+      - --node-id 0
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    ports:
+      - "19092:19092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+
+  console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    container_name: redpanda-console
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redpanda
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - ./minio_data:/data
+    command: server /data --console-address ":9001"
+
+volumes:
+  redpanda_data:

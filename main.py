@@ -29,7 +29,7 @@ from pathlib import Path
 import config
 from rest_collector import RestCollector
 from ws_collector    import WebSocketCollector
-from storage         import DataStorage
+from redpanda_storage import RedpandaStorage
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ logger = logging.getLogger("main")
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def run():
-    storage = DataStorage(config.DATA_DIR)
+    storage = RedpandaStorage()
     rest    = RestCollector(config.REST_BASE_URL, config.API_KEY)
 
     # ── stats ────────────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ async def run():
                 s = storage.summary()
                 total = sum(s.values())
                 logger.info(
-                    "[REST] Refresh OK – total records in files: %d | ws klines=%d depth=%d ticker=%d",
+                    "[REST] Refresh OK – total records in Redpanda: %d | ws klines=%d depth=%d ticker=%d",
                     total, stats["ws_klines"], stats["ws_depth"], stats["ws_ticker"],
                 )
             except Exception as e:
@@ -220,9 +220,9 @@ async def run():
                 stats["hist_klines"], stats["hist_depth"], stats["hist_ticker"])
     logger.info("  Real-time  : klines=%d  depth=%d  ticker=%d",
                 stats["ws_klines"], stats["ws_depth"], stats["ws_ticker"])
-    logger.info("  Files written:")
-    for fname, count in sorted(final.items()):
-        logger.info("    %-45s %d records", fname, count)
+    logger.info("  Topics written:")
+    for tname, count in sorted(final.items()):
+        logger.info("    %-45s %d records", tname, count)
     logger.info("  Location: %s", config.DATA_DIR.resolve())
     logger.info("=" * 70)
 
