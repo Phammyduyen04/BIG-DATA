@@ -1,135 +1,84 @@
-# Binance Data Streamer
+# Binance Real-Time Streaming Pipeline (Redpanda + MinIO)
 
-Thu thập dữ liệu real-time và historical từ Binance cho **100 đồng crypto phổ biến nhất** (theo 24h volume), kết hợp REST API và WebSocket đồng thời.
-
----
-
-## Dữ liệu thu thập
-
-| Loại | Nguồn | Tần suất | Lưu tại |
-|------|-------|----------|---------|
-| **Klines 1m** | REST (historical) + WebSocket (real-time) | Mỗi phút | `data/klines/` |
-| **Order Book** | REST (snapshot) + WebSocket (top-20, 1s) | Mỗi giây | `data/orderbook/` |
-| **Ticker 24h** | REST (snapshot) + WebSocket (rolling) | Real-time | `data/ticker24h/` |
-
-Định dạng lưu: **JSON Lines** (`.jsonl`) – mỗi dòng là 1 JSON object hoàn chỉnh.
+Hệ thống thu thập dữ liệu Big Data từ Binance cho **100 đồng tiền điện tử phổ biến nhất** (USDT pairs). Pipeline được thiết kế theo chuẩn doanh nghiệp sử dụng **Redpanda** làm Message Broker và **MinIO** làm Data Lake.
 
 ---
 
-## Cấu trúc project
+## 🏗️ Kiến trúc Pipeline
 
-```
-DATA-STREAMING/
-├── .env                  # API keys (không commit)
-├── .gitignore
-├── requirements.txt
-├── config.py             # Cấu hình tập trung
-├── main.py               # Entry point
-├── rest_collector.py     # Lấy dữ liệu historical qua REST API
-├── ws_collector.py       # Stream real-time qua WebSocket
-├── storage.py            # Ghi dữ liệu ra file JSONL
-├── data/
-│   ├── klines/           # <SYMBOL>_klines_1m.jsonl   (100 files)
-│   ├── orderbook/        # <SYMBOL>_orderbook.jsonl   (100 files)
-│   └── ticker24h/        # <SYMBOL>_ticker24h.jsonl   (100 files)
-└── logs/                 # Log file theo ngày
+```text
+Binance WebSocket/REST ──► Python Producer ──► Redpanda (Kafka API) ──► Python Consumer ──► MinIO (S3 Storage)
 ```
 
+1.  **Producer (`main.py`)**: Tự động tìm Top Symbols, fetch dữ liệu lịch sử và stream dữ liệu thực tế.
+2.  **Broker (Redpanda)**: Lưu trữ dữ liệu thô trong các Topics theo thời gian thực.
+3.  **Consumer (`consumer_to_minio.py`)**: Gom nhóm dữ liệu (Batching) và đẩy lên lưu trữ đám mây (MinIO).
+
 ---
 
-## Cài đặt
+## 🛠️ Hạ tầng & Tài khoản
 
+Hệ thống chạy trên Docker Compose. Sau khi khởi động (`docker compose up -d`), bạn có thể truy cập các địa chỉ sau:
+
+| Dịch vụ | Địa chỉ | Tài khoản / Ghi chú |
+| :--- | :--- | :--- |
+| **MinIO Console** | [http://localhost:9001](http://localhost:9001) | `minioadmin` / `minioadmin` |
+| **MinIO API** | [http://localhost:9000](http://localhost:9000) | Endpoint cho Spark/Boto3 |
+| **Redpanda Console** | [http://localhost:8080](http://localhost:8080) | Xem trực tiếp message trong topics |
+| **Redpanda Broker** | `localhost:19092` | Địa chỉ nội bộ cho code kết nối |
+
+---
+
+## 📂 Lưu trữ tại MinIO (Data Lake)
+
+Dữ liệu được lưu trong bucket `binance/` theo cấu trúc Schema-on-Read, phân cấp như sau:
+
+*   **Klines**: `raw/klines/interval=1m/date=YYYY-MM-DD/symbol=.../hour=HH/part-XXXXX.json`
+*   **Order Book**: `raw/depth/date=YYYY-MM-DD/symbol=.../hour=HH/part-XXXXX.json`
+*   **Ticker 24h**: `raw/ticker/date=YYYY-MM-DD/symbol=.../hour=HH/part-XXXXX.json`
+
+---
+
+## 🚀 Hướng dẫn khởi chạy
+
+### 1. Chuẩn bị môi trường
+Cài đặt thư viện:
 ```bash
 pip install -r requirements.txt
 ```
 
-Tạo file `.env`:
-
+Cấu hình API Key trong file `.env`:
 ```env
-BINANCE_API_KEY=your_api_key
-BINANCE_SECRET_KEY=your_secret_key
+BINANCE_API_KEY=your_key
+BINANCE_SECRET_KEY=your_secret
+TOP_N_SYMBOLS=100
+REDPANDA_BROKERS=localhost:19092
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=binance
 ```
 
----
-
-## Chạy
-
+### 2. Khởi động Hạ tầng
 ```bash
-python main.py
+docker compose up -d
 ```
 
-Streamer sẽ tự dừng sau **24 giờ**. Nhấn `Ctrl+C` để dừng sớm.
-
-### Tuỳ chỉnh trong `config.py`
-
-| Tham số | Mặc định | Mô tả |
-|---------|----------|-------|
-| `TOP_N_SYMBOLS` | `100` | Số lượng symbols muốn stream |
-| `KLINE_INTERVAL` | `1m` | Timeframe nến |
-| `KLINES_LOOKBACK_LIMIT` | `1440` | Số nến lịch sử (1440 = 24h) |
-| `DEPTH_LEVELS` | `20` | Số mức giá order book |
-| `STREAM_DURATION_SECONDS` | `86400` | Thời gian chạy (giây) |
-| `REST_REFRESH_INTERVAL` | `60` | Chu kỳ refresh REST snapshot (giây) |
+### 3. Chạy Pipeline
+Mở 2 terminal riêng biệt:
+*   **Terminal 1 (Producer)**: `python main.py`
+*   **Terminal 2 (Consumer)**: `python consumer_to_minio.py`
 
 ---
 
-## Kiến trúc
-
-```
-Khởi động
-    │
-    ├─► [REST] Khám phá top 100 symbols (by 24h volume)
-    │
-    ├─► [REST] Fetch lịch sử 24h ──────────────────────────┐
-    │         100 symbols × 1440 nến = 144,000 records     │
-    │                                                       ├─► Ghi JSONL
-    ├─► [WS]  2 connections × 150 streams mỗi connection   │
-    │         kline_1m + depth20@1000ms + ticker            │
-    │         (300 streams tổng)                           ─┘
-    │
-    └─► [REST] Refresh snapshot mỗi 60 giây
-```
-
-**Phân biệt historical vs real-time** qua field `source`:
-
-| Giá trị | Ý nghĩa |
-|---------|---------|
-| `rest_historical` | Dữ liệu lịch sử lấy lúc khởi động |
-| `rest_snapshot` | Snapshot định kỳ qua REST |
-| `websocket` | Dữ liệu real-time qua WebSocket |
+## 🛡️ Các tệp tin chính
+*   `main.py`: Entry point chính của Producer.
+*   `redpanda_storage.py`: Xử lý việc đẩy dữ liệu vào các Kafka Topics.
+*   `consumer_to_minio.py`: Consumer đọc từ Redpanda và ghi vào MinIO.
+*   `rest_collector.py` / `ws_collector.py`: Các module lấy dữ liệu từ Binance.
+*   `config.py`: Cấu hình tập trung cho toàn bộ hệ thống.
 
 ---
 
-## Đọc dữ liệu
-
-```python
-import pandas as pd
-
-# Klines
-klines = pd.read_json("data/klines/BTCUSDT_klines_1m.jsonl", lines=True)
-
-# Phân tách historical vs real-time
-historical = klines[klines["source"] == "rest_historical"]
-realtime   = klines[klines["source"] == "websocket"]
-
-# Chỉ lấy nến đã đóng hoàn chỉnh
-closed = klines[klines["is_closed"] == True]
-
-# Order book
-book = pd.read_json("data/orderbook/BTCUSDT_orderbook.jsonl", lines=True)
-
-# Ticker 24h
-ticker = pd.read_json("data/ticker24h/BTCUSDT_ticker24h.jsonl", lines=True)
-```
-
----
-
-## Ước tính dữ liệu sau 24h (100 symbols)
-
-| Thư mục | Records | Dung lượng |
-|---------|--------:|----------:|
-| `klines/` | ~288,000 | ~120 MB |
-| `orderbook/` | ~8,700,000 | ~13 GB |
-| `ticker24h/` | ~8,700,000 | ~4 GB |
-
-> Order book và ticker cập nhật liên tục (1 lần/giây × 100 symbols × 86,400 giây).
+## 📊 Bước tiếp theo
+Hệ thống đã sẵn sàng để tích hợp với **Apache Spark** để thực hiện các bài toán phân tích Big Data (như tính toán RSI, EMA,...). Dữ liệu trong MinIO có thể được đọc trực tiếp bằng PySpark thông qua giao thức S3A.
