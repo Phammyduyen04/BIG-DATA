@@ -11,6 +11,8 @@ build/
 # Environment
 .env
 *.env
+.env.k8s
+.env.bak
 
 # Data output
 data/
