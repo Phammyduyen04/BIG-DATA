@@ -35,4 +35,11 @@ env/
 # Local Data & Infra
 minio_data/
 .gemini/
+postgres_data/
+ivy_cache/
+checkpoint_data/
+test_data/
+.sparkStaging/
+metastore_db/
+derby.log
 
