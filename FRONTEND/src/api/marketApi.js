@@ -19,3 +19,7 @@ export const getTrades = (symbol, limit = 50) =>
 
 export const getKlineLatestTime = (symbol, interval) =>
   axios.get(`${BASE}/${symbol}/klines/latest-time`, { params: { interval_code: interval } }).then(r => r.data.data);
+
+const TOP_COINS_BASE = 'http://localhost:3000/api/top-coins';
+export const getTopCoins = () => axios.get(TOP_COINS_BASE).then(r => r.data.data);
+export const getTopCoinDetail = (symbol) => axios.get(`${TOP_COINS_BASE}/${symbol}`).then(r => r.data.data);

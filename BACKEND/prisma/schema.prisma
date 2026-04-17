@@ -1,0 +1,132 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ────────────────────────────────────────────────────
+// Dimension Tables (dim_*)
+// ────────────────────────────────────────────────────
+
+/// Bảng chứa thông tin symbol (cặp trading)
+model DimSymbol {
+  symbol_id   BigInt   @id @default(autoincrement())
+  symbol_code String   @unique @db.VarChar(20)
+  base_asset  String?  @db.VarChar(20)
+  quote_asset String?  @db.VarChar(20)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  /// Relations
+  klines            FactKline[]
+  ticker24hSnapshots FactTicker24hSnapshot[]
+  rawTrades         FactRawTrade[]
+
+  @@map("dim_symbols")
+  @@index([symbol_code])
+}
+
+// ────────────────────────────────────────────────────
+// Fact Tables (fact_*)
+// ────────────────────────────────────────────────────
+
+/// Bảng chứa dữ liệu kline (candlestick) cho từng interval
+model FactKline {
+  kline_id               BigInt   @id @default(autoincrement())
+  symbol_id              BigInt
+  interval_code          String   @db.VarChar(10)
+  open_time              DateTime
+  close_time             DateTime
+  open_price             Decimal  @db.Decimal(30, 12)
+  high_price             Decimal  @db.Decimal(30, 12)
+  low_price              Decimal  @db.Decimal(30, 12)
+  close_price            Decimal  @db.Decimal(30, 12)
+  volume_base            Decimal? @db.Decimal(30, 12)
+  volume_quote           Decimal? @db.Decimal(30, 12)
+  num_trades             BigInt?
+  taker_buy_quote_volume Decimal? @db.Decimal(30, 12)
+
+  /// Relations
+  symbol DimSymbol @relation(fields: [symbol_id], references: [symbol_id], onDelete: Cascade)
+
+  @@unique([symbol_id, interval_code, open_time], name: "uq_klines")
+  @@index([symbol_id, interval_code, open_time(sort: Desc)], name: "idx_klines_lookup")
+  @@map("fact_klines")
+}
+
+/// Bảng chứa snapshot ticker 24h (thay đổi giá, volume trong 24h)
+model FactTicker24hSnapshot {
+  ticker_snapshot_id   BigInt   @id @default(autoincrement())
+  symbol_id            BigInt
+  snapshot_time        DateTime
+  price_change         Decimal? @db.Decimal(30, 12)
+  price_change_percent Decimal? @db.Decimal(18, 8)
+  last_price           Decimal? @db.Decimal(30, 12)
+  high_price           Decimal? @db.Decimal(30, 12)
+  low_price            Decimal? @db.Decimal(30, 12)
+  volume_base_24h      Decimal? @db.Decimal(30, 12)
+  volume_quote_24h     Decimal? @db.Decimal(30, 12)
+  trade_count          BigInt?
+  ingested_at          DateTime @default(now())
+
+  /// Relations
+  symbol DimSymbol @relation(fields: [symbol_id], references: [symbol_id], onDelete: Cascade)
+
+  @@unique([symbol_id, snapshot_time], name: "uq_ticker_snapshot")
+  @@index([symbol_id, snapshot_time(sort: Desc)], name: "idx_ticker_lookup")
+  @@map("fact_ticker_24h_snapshots")
+}
+
+/// Bảng chứa raw trade data (từng giao dịch riêng lẻ)
+model FactRawTrade {
+  raw_trade_sk   BigInt   @id @default(autoincrement())
+  symbol_id      BigInt
+  trade_id       BigInt
+  trade_time     DateTime
+  price          Decimal  @db.Decimal(30, 12)
+  qty_base       Decimal  @db.Decimal(30, 12)
+  quote_qty      Decimal? @db.Decimal(30, 12)
+  is_buyer_maker Boolean?
+  is_best_match  Boolean?
+  ingested_at    DateTime @default(now())
+
+  /// Relations
+  symbol DimSymbol @relation(fields: [symbol_id], references: [symbol_id], onDelete: Cascade)
+
+  @@unique([symbol_id, trade_id], name: "uq_raw_trades")
+  @@index([symbol_id, trade_time(sort: Desc)], name: "idx_trades_lookup")
+  @@map("fact_raw_trades")
+}
+
+// ────────────────────────────────────────────────────
+// Mart Tables (mart_*)
+// ────────────────────────────────────────────────────
+
+/// Bảng top coins - xếp hạng theo tổng hợp nhiều chỉ số
+model MartTopCoin {
+  id                  BigInt    @id @default(autoincrement())
+  timeframe           String?   @db.VarChar(10)
+  rank                Int?
+  symbol_id           BigInt?
+  symbol_code         String?   @db.VarChar(20)
+  total_volume_quote  Decimal?  @db.Decimal(30, 12)
+  total_num_trades    BigInt?
+  avg_taker_buy_ratio Decimal?  @db.Decimal(10, 6)
+  bullish_ratio       Decimal?  @db.Decimal(10, 6)
+  volume_trend        Decimal?  @db.Decimal(10, 4)
+  money_flow          Decimal?  @db.Decimal(30, 12)
+  whale_buy_ratio     Decimal?  @db.Decimal(10, 6)
+  long_term_score     Decimal?  @db.Decimal(10, 4)
+  signal              String?   @db.VarChar(20)
+  computed_at         DateTime?
+
+  @@index([timeframe, computed_at(sort: Desc)], name: "idx_mart_top_coins_lookup")
+  @@map("mart_top_coins")
+}

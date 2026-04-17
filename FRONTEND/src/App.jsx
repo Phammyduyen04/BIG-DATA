@@ -5,6 +5,7 @@ import CandlestickChart from './components/CandlestickChart';
 import IntervalSelector from './components/IntervalSelector';
 import TradesList from './components/TradesList';
 import CoinFilter from './components/CoinFilter';
+import TopCoinsChart from './components/TopCoinsChart';
 
 const TABS = ['Hiển thị', 'Bài toán'];
 
@@ -33,6 +34,16 @@ const INTERVAL_DEFAULT_RANGE = {
   '1h':  '1mo',
   '4h':  '3mo',
   '1d':  '3mo',
+};
+
+const INTERVAL_LIMIT = {
+  '1m':  500,
+  '5m':  600,
+  '15m': 800,
+  '30m': 1000,
+  '1h':  1000,
+  '4h':  1000,
+  '1d':  1000,
 };
 
 export default function App() {
@@ -96,7 +107,8 @@ export default function App() {
       const latestTime = await getKlineLatestTime(selectedSymbol, selectedInterval);
       const end = latestTime ? new Date(latestTime) : new Date();
       const start = new Date(end.getTime() - (RANGE_MS[selectedRange] ?? RANGE_MS['1mo']));
-      const data = await getKlines(selectedSymbol, selectedInterval, start.toISOString(), end.toISOString());
+      const limit = INTERVAL_LIMIT[selectedInterval] ?? 1000;
+      const data = await getKlines(selectedSymbol, selectedInterval, start.toISOString(), end.toISOString(), limit);
       setKlines(data);
     } catch (e) {
       console.error('Klines error:', e);
@@ -151,7 +163,7 @@ export default function App() {
               onSymbolChange={setSelectedSymbol}
             />
             <div style={{ flex: 1, minHeight: 0, background: '#0b0e11' }}>
-              <CandlestickChart klines={klines} interval={selectedInterval} onZoom={handleChartZoom} />
+              <CandlestickChart klines={klines} interval={selectedInterval} onZoom={handleChartZoom} onIntervalChange={handleIntervalChange} />
             </div>
             <IntervalSelector
               selected={selectedInterval}
@@ -175,8 +187,8 @@ export default function App() {
 
       {/* Tab: Bài toán */}
       {activeTab === 1 && (
-        <div className="flex items-center justify-center text-gray-500" style={{ flex: 1 }}>
-          <p className="text-sm">Nội dung bài toán sẽ được thêm vào đây</p>
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <TopCoinsChart />
         </div>
       )}
     </div>
