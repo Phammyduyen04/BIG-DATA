@@ -1,0 +1,28 @@
+"""
+Utility: thực thi raw SQL qua JDBC driver đã load sẵn trong Spark JVM.
+Dùng cho staging → upsert (INSERT ... ON CONFLICT) vì Spark JDBC
+writer không hỗ trợ ON CONFLICT natively.
+"""
+
+
+def execute_sql(spark, jdbc_url, jdbc_props, sql: str) -> None:
+    """Chạy một câu SQL bất kỳ qua kết nối JDBC từ JVM của Spark driver."""
+    jvm = spark._jvm
+    java_props = jvm.java.util.Properties()
+    for k, v in jdbc_props.items():
+        java_props.setProperty(k, v)
+
+    conn = jvm.java.sql.DriverManager.getConnection(jdbc_url, java_props)
+    try:
+        conn.setAutoCommit(True)
+        stmt = conn.createStatement()
+        stmt.execute(sql)
+        stmt.close()
+    finally:
+        conn.close()
+
+
+def load_symbol_map(spark, jdbc_url, jdbc_props) -> dict:
+    """Trả về dict {symbol_code: symbol_id} từ dim_symbols."""
+    df = spark.read.jdbc(jdbc_url, "dim_symbols", properties=jdbc_props)
+    return {row.symbol_code: row.symbol_id for row in df.collect()}
