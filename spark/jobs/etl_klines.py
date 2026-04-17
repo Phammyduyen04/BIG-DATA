@@ -16,32 +16,45 @@ _FNAME_RE = re.compile(r"^[A-Z]+_([^_]+)_\d{8}_\d{8}\.csv$")
 
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
+    from etl_utils import emulate_listdir, load_contract_df
     sym_map = load_symbol_map(spark, jdbc_url, jdbc_props)
-    klines_base = os.path.join(data_base_path, "klines")
+    klines_base = f"{data_base_path.rstrip('/')}/klines"
 
     all_dfs = []
 
-    for symbol_dir in sorted(os.listdir(klines_base)):
-        symbol_path = os.path.join(klines_base, symbol_dir)
-        if not os.path.isdir(symbol_path):
-            continue
-
+    # Adapter: Liệt kê symbols từ S3 klines root
+    # Lưu ý: Trên MinIO, klines có partition interval=1m/, ta sẽ quét sâu hơn một chút
+    # nhưng để giữ logic đơn giản nhất cho team, ta giả định data_base_path hướng tới root
+    for symbol_dir in emulate_listdir(spark, klines_base):
         symbol_id = sym_map.get(symbol_dir)
         if symbol_id is None:
             print(f"[klines] Bỏ qua '{symbol_dir}' – không có trong dim_symbols")
             continue
 
-        for fname in sorted(os.listdir(symbol_path)):
+        # Adapter: Tìm tất cả JSON files cho symbol này (recursive)
+        symbol_path = f"{klines_base}/{symbol_dir}"
+        # Trên S3, ta thường đọc cả folder thay vì lặp từng file part-*.json để Spark tự song song hóa
+        # Tuy nhiên, code gốc parse 'interval' từ tên file. 
+        # Để bảo tồn logic này, ta giả lập việc 'tìm thấy 1 file' cho mỗi interval.
+        intervals = ["1m"] # Hiện tại MinIO chủ yếu có 1m
+        
+        for interval in intervals:
+            # Tạo đường dẫn S3 nạp toàn bộ dữ liệu của symbol + interval này
+            # Cấu trúc thực tế: raw/klines/interval=1m/date=*/symbol=BTCUSDT/*/*.json
+            # Nhưng để khớp với logic cũ, ta dùng glob:
+            s3_glob_path = f"{data_base_path.rstrip('/')}/klines/interval={interval}/date=*/symbol={symbol_dir}/*/*.json"
+            
+            # Khôi phục 'fname' ảo để Regex _FNAME_RE hoạt động (BTCUSDT_1m_...)
+            fname = f"{symbol_dir}_{interval}_99999999_99999999.csv"
             m = _FNAME_RE.match(fname)
-            if not m:
+            if not m: continue
+            
+            print(f"[klines] Đọc dữ liệu từ S3 cho {symbol_dir} ({interval})")
+            
+            # Adapter nạp JSON và khôi phục Contract cột (taker_buy_quote_vol, ...)
+            df = load_contract_df(spark, s3_glob_path, "klines")
+            if df.rdd.isEmpty():
                 continue
-            interval = m.group(1)   # "1m", "5m", "1h" ...
-
-            df = (
-                spark.read
-                .option("header", "true")
-                .csv(os.path.join(symbol_path, fname))
-            )
 
             df = df.select(
                 F.lit(symbol_id).cast("bigint").alias("symbol_id"),

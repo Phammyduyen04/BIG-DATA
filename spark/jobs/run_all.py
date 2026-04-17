@@ -4,7 +4,7 @@ Orchestrator: chạy toàn bộ ETL + Analytics theo thứ tự
   1. dim_symbols          (phải chạy trước để có symbol_id)
   2. fact_klines (1m)     (cache df_1m để resample dùng lại)
   3. fact_klines resample (5m/15m/30m/1h/4h/1d từ df_1m cached)
-  4. fact_raw_trades      (+ mart_trade_metrics + mart_whale_alerts)
+  4. mart_trade_metrics   (money_flow + whale signals per symbol; MinIO giữ raw)
   5. fact_ticker_24h_snapshots
   6. analysis_top_coins   (top 10 dài hạn → mart_top_coins)
 
@@ -62,7 +62,7 @@ def main():
     if df_1m:
         df_1m.unpersist()
 
-    print("\n>>> [4/6] fact_raw_trades + mart_trade_metrics + mart_whale_alerts")
+    print("\n>>> [4/6] mart_trade_metrics (money flow + whale signals)")
     etl_trades.run(spark, jdbc_url, jdbc_props, data_base_path)
 
     print("\n>>> [5/6] fact_ticker_24h_snapshots")

@@ -1,0 +1,43 @@
+# ============================================================
+# Kubernetes Job: Chạy Spark ETL (One-shot)
+# ============================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spark-etl-production
+  namespace: default
+spec:
+  template:
+    spec:
+      serviceAccountName: spark-job-sa
+      containers:
+      - name: spark-etl
+        image: huytrongbeou1310/bigdata_spark_postgresql:v1.0.0
+        # spark-submit được set là entrypoint trong Dockerfile
+        # CMD mặc định là launcher.py
+        env:
+        # Load tất cả từ ConfigMap
+        - name: MINIO_ENDPOINT
+          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_ENDPOINT } }
+        - name: MINIO_BUCKET
+          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_BUCKET } }
+        - name: JDBC_URL
+          valueFrom: { configMapKeyRef: { name: etl-config, key: JDBC_URL } }
+        # Load từ Secret
+        - name: MINIO_ACCESS_KEY
+          valueFrom: { secretKeyRef: { name: etl-secrets, key: MINIO_ACCESS_KEY } }
+        - name: MINIO_SECRET_KEY
+          valueFrom: { secretKeyRef: { name: etl-secrets, key: MINIO_SECRET_KEY } }
+        - name: JDBC_USER
+          valueFrom: { secretKeyRef: { name: etl-secrets, key: JDBC_USER } }
+        - name: JDBC_PASSWORD
+          valueFrom: { secretKeyRef: { name: etl-secrets, key: JDBC_PASSWORD } }
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+      restartPolicy: OnFailure
+  backoffLimit: 3

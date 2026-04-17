@@ -53,8 +53,11 @@ CREATE TABLE IF NOT EXISTS fact_ticker_24h_snapshots (
 CREATE INDEX IF NOT EXISTS idx_ticker_lookup
     ON fact_ticker_24h_snapshots (symbol_id, snapshot_time DESC);
 
--- ── fact_raw_trades ───────────────────────────────────────
-CREATE TABLE IF NOT EXISTS fact_raw_trades (
+-- ── fact_recent_trades ────────────────────────────────────
+-- Ring buffer chứa trade gần đây per symbol (dành cho streaming + dashboard)
+-- Batch ETL không ghi vào bảng này. MinIO giữ full historical raw.
+-- Streaming job append rows, cleanup job xoá rows cũ hơn retention.
+CREATE TABLE IF NOT EXISTS fact_recent_trades (
     raw_trade_sk   BIGSERIAL       PRIMARY KEY,
     symbol_id      BIGINT          NOT NULL,
     trade_id       BIGINT          NOT NULL,
@@ -65,46 +68,29 @@ CREATE TABLE IF NOT EXISTS fact_raw_trades (
     is_buyer_maker BOOLEAN,
     is_best_match  BOOLEAN,
     ingested_at    TIMESTAMP       DEFAULT NOW(),
-    CONSTRAINT uq_raw_trades      UNIQUE (symbol_id, trade_id),
-    CONSTRAINT fk_trades_symbol   FOREIGN KEY (symbol_id) REFERENCES dim_symbols(symbol_id)
+    CONSTRAINT uq_recent_trades    UNIQUE (symbol_id, trade_id),
+    CONSTRAINT fk_recent_symbol    FOREIGN KEY (symbol_id) REFERENCES dim_symbols(symbol_id)
 );
-CREATE INDEX IF NOT EXISTS idx_trades_lookup
-    ON fact_raw_trades (symbol_id, trade_time DESC);
+CREATE INDEX IF NOT EXISTS idx_recent_trades_lookup
+    ON fact_recent_trades (symbol_id, trade_time DESC);
 
 -- ── mart_trade_metrics ────────────────────────────────────
--- Aggregate money flow + whale signals per symbol
--- Được tính từ Spark trong etl_trades, ghi đè mỗi lần ETL chạy
+-- Aggregate money flow + whale signals per symbol (dùng cho scoring)
+-- Batch: etl_trades tính trực tiếp trong Spark (groupBy trên CSV, không staging).
+-- Streaming: sau khi có streaming trades sẽ update dần từ Redpanda.
+-- Mỗi lần ETL chạy: TRUNCATE + INSERT (overwrite snapshot).
 CREATE TABLE IF NOT EXISTS mart_trade_metrics (
     symbol_id         BIGINT          PRIMARY KEY,
     total_buy_volume  DECIMAL(30,12),  -- quote_qty tổng lệnh mua chủ động (is_buyer_maker=False)
     total_sell_volume DECIMAL(30,12),  -- quote_qty tổng lệnh bán chủ động (is_buyer_maker=True)
     money_flow        DECIMAL(30,12),  -- buy - sell: dương = tiền vào, âm = tiền ra
     total_trades      BIGINT,
-    whale_threshold   DECIMAL(30,12),  -- ngưỡng "lệnh lớn" = avg + 2*stddev per symbol
-    whale_buy_volume  DECIMAL(30,12),  -- whale buy quote volume
-    whale_sell_volume DECIMAL(30,12),  -- whale sell quote volume
+    whale_threshold   DECIMAL(30,12),  -- ngưỡng "lệnh lớn" = GREATEST(avg+2σ, avg×3)
+    whale_buy_volume  DECIMAL(30,12),
+    whale_sell_volume DECIMAL(30,12),
     whale_buy_ratio   DECIMAL(10,6),   -- whale_buy / (whale_buy + whale_sell): 0.0→1.0
     computed_at       TIMESTAMP        DEFAULT NOW()
 );
-
--- ── mart_whale_alerts ─────────────────────────────────────
--- Từng lệnh khớp lớn bất thường — dùng cho dashboard cảnh báo
--- Được tính từ Spark trong etl_trades, ghi đè mỗi lần ETL chạy
-CREATE TABLE IF NOT EXISTS mart_whale_alerts (
-    alert_id        BIGSERIAL       PRIMARY KEY,
-    symbol_id       BIGINT          NOT NULL,
-    trade_time      TIMESTAMP       NOT NULL,
-    direction       VARCHAR(4)      NOT NULL,   -- 'BUY' | 'SELL'
-    price           DECIMAL(30,12),
-    quote_qty       DECIMAL(30,12),
-    size_multiplier DECIMAL(10,2),              -- lớn gấp bao nhiêu lần lệnh TB của symbol
-    alert_level     VARCHAR(10)     NOT NULL,   -- 'LARGE'(>2σ) | 'WHALE'(>3σ) | 'MEGA'(>4σ)
-    computed_at     TIMESTAMP       DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_whale_alerts_symbol
-    ON mart_whale_alerts (symbol_id, trade_time DESC);
-CREATE INDEX IF NOT EXISTS idx_whale_alerts_level
-    ON mart_whale_alerts (alert_level, trade_time DESC);
 
 -- ── mart_top_coins ────────────────────────────────────────
 -- Kết quả phân tích top 10 coin dài hạn

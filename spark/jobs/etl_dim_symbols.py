@@ -20,13 +20,18 @@ def _parse_assets(symbol_code: str):
 
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
-    klines_base = os.path.join(data_base_path, "klines")
-
+    # Adapter: Sử dụng S3A path và emulate_listdir để tìm symbols
+    from etl_utils import emulate_listdir
+    klines_base = f"{data_base_path.rstrip('/')}/klines"
+    
+    print(f"[dim_symbols] Discovering symbols from S3: {klines_base}")
+    
     symbols = []
-    for name in sorted(os.listdir(klines_base)):
-        if os.path.isdir(os.path.join(klines_base, name)):
-            base, quote = _parse_assets(name)
-            symbols.append((name, base, quote))
+    # emulate_listdir trả về sorted list các subdirectories (symbol codes)
+    for name in emulate_listdir(spark, klines_base):
+        # Logic parse asset được giữ nguyên bản
+        base, quote = _parse_assets(name)
+        symbols.append((name, base, quote))
 
     schema = StructType([
         StructField("symbol_code", StringType()),

@@ -2,7 +2,9 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Ưu tiên load file môi trường từ biến ENV_FILE (dùng cho Spark Processing)
+env_file = os.getenv("ENV_FILE", ".env")
+load_dotenv(dotenv_path=env_file)
 
 # ── Binance credentials ───────────────────────────────────────────────────────
 API_KEY    = os.getenv("BINANCE_API_KEY", "")
@@ -50,3 +52,17 @@ REST_CONCURRENCY = 10              # max 10 request REST đồng thời
 
 # ── Periodic REST refresh (giây) ─────────────────────────────────────────────
 REST_REFRESH_INTERVAL = 60
+
+# ── MinIO Storage (Spark Processing) ──────────────────────────────────────────
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+MINIO_BUCKET     = os.getenv("MINIO_BUCKET", "binance")
+MINIO_SECURE     = os.getenv("MINIO_SECURE", "false").lower() == "true"
+
+# Prefixes dữ liệu (Ghép thành: s3a://{bucket}/{prefix})
+PREFIX_KLINES    = os.getenv("MINIO_PREFIX_KLINES", "raw/klines/")
+PREFIX_DEPTH     = os.getenv("MINIO_PREFIX_DEPTH",  "raw/depth/")
+PREFIX_TICKER    = os.getenv("MINIO_PREFIX_TICKER", "raw/ticker/")
+
+SPARK_APP_NAME   = os.getenv("SPARK_APP_NAME", "read-minio-json")
