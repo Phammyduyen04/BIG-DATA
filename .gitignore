@@ -3,6 +3,7 @@
 
 # Output data
 output/
+DATA/
 
 # Python
 __pycache__/

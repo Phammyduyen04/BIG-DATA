@@ -1,13 +1,12 @@
 """
 Binance REST API streaming: klines (1m, last 24h) + ticker_24h
-for top 100 USDT symbols by quote volume.
+for top 100 USDT symbols by quote volume over the past 3 months.
+Output saved as CSV to DATA/ directory.
 """
 
 import csv
-import io
 import os
 import time
-import json
 import logging
 import requests
 from datetime import datetime, timezone
@@ -20,34 +19,33 @@ API_KEY = os.getenv("BINANCE_API_KEY")
 BASE_URL = "https://api.binance.com"
 INTERVAL = "1m"
 TOP_N = 100
-OUTPUT_DIR = Path("output")
-JSON_DIR = OUTPUT_DIR / "json"
-CSV_DIR = OUTPUT_DIR / "csv"
-for d in (JSON_DIR, CSV_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+DATA_DIR = Path("DATA")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(OUTPUT_DIR / "stream.log", encoding="utf-8"),
+        logging.FileHandler(DATA_DIR / "stream.log", encoding="utf-8"),
     ],
 )
 log = logging.getLogger(__name__)
 
 HEADERS = {"X-MBX-APIKEY": API_KEY} if API_KEY else {}
 
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+
 
 def get(endpoint: str, params: dict = None) -> dict | list:
     url = BASE_URL + endpoint
-    resp = requests.get(url, headers=HEADERS, params=params, timeout=30)
+    resp = SESSION.get(url, params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
 
 
 def is_valid_ascii_symbol(symbol: str) -> bool:
-    """Binance REST API requires pure ASCII symbol names."""
     try:
         symbol.encode("ascii")
         return True
@@ -56,19 +54,50 @@ def is_valid_ascii_symbol(symbol: str) -> bool:
 
 
 def fetch_top100_usdt_symbols() -> list[str]:
-    """Return top 100 USDT symbols ranked by quoteVolume (24h)."""
-    log.info("Fetching 24h ticker for all symbols to determine top 100 USDT pairs...")
-    tickers = get("/api/v3/ticker/24hr")
+    """Return top 100 USDT symbols ranked by total quoteVolume over the past 3 months.
 
-    usdt_tickers = [
-        t for t in tickers
-        if t["symbol"].endswith("USDT") and is_valid_ascii_symbol(t["symbol"])
+    Uses monthly klines (interval=1M) for all USDT pairs, sums the last 3 candles'
+    quoteAssetVolume to approximate 3-month trading activity.
+    """
+    log.info("Fetching exchange info to get all USDT spot symbols...")
+    info = get("/api/v3/exchangeInfo")
+    all_usdt = [
+        s["symbol"] for s in info["symbols"]
+        if s["quoteAsset"] == "USDT"
+        and s["status"] == "TRADING"
+        and is_valid_ascii_symbol(s["symbol"])
     ]
-    usdt_tickers.sort(key=lambda t: float(t["quoteVolume"]), reverse=True)
+    log.info("Found %d active USDT trading pairs", len(all_usdt))
 
-    top100 = [t["symbol"] for t in usdt_tickers[:TOP_N]]
-    log.info("Top 100 USDT symbols selected: %s ... (total %d)", top100[:5], len(top100))
-    return top100
+    # 3-month window: endTime = now, startTime = ~91 days ago, interval = 1M (3 candles)
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - 91 * 24 * 60 * 60 * 1000
+
+    log.info("Fetching 3-month monthly klines for each symbol to rank by volume...")
+    vol_map: dict[str, float] = {}
+    for i, symbol in enumerate(all_usdt, 1):
+        try:
+            candles = get("/api/v3/klines", params={
+                "symbol": symbol,
+                "interval": "1M",
+                "startTime": start_ms,
+                "endTime": now_ms,
+                "limit": 3,
+            })
+            # index 7 = quoteAssetVolume
+            total_vol = sum(float(c[7]) for c in candles)
+            if total_vol > 0:
+                vol_map[symbol] = total_vol
+        except Exception as e:
+            log.debug("Skip %s: %s", symbol, e)
+        # stay well within weight limit (~1200/min); klines weight=2
+        if i % 50 == 0:
+            log.info("  Progress: %d / %d symbols processed", i, len(all_usdt))
+        time.sleep(0.05)
+
+    ranked = sorted(vol_map, key=vol_map.get, reverse=True)[:TOP_N]
+    log.info("Top 100 USDT symbols by 3-month volume: %s ... (total %d)", ranked[:5], len(ranked))
+    return ranked
 
 
 def fetch_ticker_24h(symbols: list[str]) -> list[dict]:
@@ -125,12 +154,6 @@ def klines_to_records(symbol: str, raw: list[list]) -> list[dict]:
     return records
 
 
-def save_json(data: list[dict] | list, path: Path):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    log.info("Saved %d records -> %s", len(data), path)
-
-
 def save_csv(data: list[dict], path: Path):
     if not data:
         return
@@ -142,7 +165,7 @@ def save_csv(data: list[dict], path: Path):
 
 
 def stream_once(symbols: list[str], start_ms: int, end_ms: int):
-    """One streaming cycle: fetch klines + ticker_24h and save to output."""
+    """One streaming cycle: fetch klines + ticker_24h and save CSV to DATA/."""
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     # --- klines (fetch first to determine active symbols) ---
@@ -159,43 +182,44 @@ def stream_once(symbols: list[str], start_ms: int, end_ms: int):
             log.info("  -> %d candles", len(records))
         else:
             log.warning("  -> 0 candles — excluding %s from both outputs", symbol)
-        # Respect Binance rate limit: ~1200 weight/min; klines costs 2 weight each
+        # klines weight=2; stay within ~1200 weight/min
         time.sleep(0.1)
 
-    save_json(all_klines, JSON_DIR / f"klines_1m_{timestamp}.json")
-    save_csv(all_klines, CSV_DIR / f"klines_1m_{timestamp}.csv")
+    save_csv(all_klines, DATA_DIR / f"klines_1m_{timestamp}.csv")
 
-    # --- ticker_24h — only for symbols that have klines data ---
+    # --- ticker_24h — only for symbols that matched klines ---
     ticker_data = fetch_ticker_24h(active_symbols)
     ticker_map = {t["symbol"]: t for t in ticker_data}
+    # Preserve the same symbol order as klines; drop any ticker-only symbols
     ticker_ordered = [ticker_map[s] for s in active_symbols if s in ticker_map]
-    save_json(ticker_ordered, JSON_DIR / f"ticker_24h_{timestamp}.json")
-    save_csv(ticker_ordered, CSV_DIR / f"ticker_24h_{timestamp}.csv")
+    save_csv(ticker_ordered, DATA_DIR / f"ticker_24h_{timestamp}.csv")
 
     return ticker_ordered, all_klines, active_symbols
 
 
 def main():
-    # Time window: last 24 hours
     now_ms = int(time.time() * 1000)
-    start_ms = now_ms - 24 * 60 * 60 * 1000  # 24h ago
+    start_ms = now_ms - 91 * 24 * 60 * 60 * 1000  # last 3 months of 1m candles
 
     log.info("=== Binance Streaming Start ===")
     log.info("Window: %s -> %s (UTC)",
              datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).isoformat(),
              datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).isoformat())
 
-    # Step 1: determine top 100 USDT symbols
+    # Step 1: top 100 USDT symbols by 3-month quote volume
     symbols = fetch_top100_usdt_symbols()
 
-    # Step 2: save symbol list
-    save_json(symbols, JSON_DIR / "top100_usdt_symbols.json")
+    # Step 2: save symbol list as CSV
+    with open(DATA_DIR / "top100_usdt_symbols.csv", "w", encoding="utf-8", newline="") as f:
+        csv.writer(f).writerows([["symbol"]] + [[s] for s in symbols])
+    log.info("Saved symbol list -> %s", DATA_DIR / "top100_usdt_symbols.csv")
 
-    # Step 3: stream klines + ticker_24h for those exact symbols
+    # Step 3: stream klines (1m) + ticker_24h — symbols matched between both
     ticker_data, klines_data, active_symbols = stream_once(symbols, start_ms, now_ms)
 
-    # Save final reconciled symbol list
-    save_json(active_symbols, JSON_DIR / "active_symbols_matched.json")
+    # Save matched symbol list
+    with open(DATA_DIR / "active_symbols_matched.csv", "w", encoding="utf-8", newline="") as f:
+        csv.writer(f).writerows([["symbol"]] + [[s] for s in active_symbols])
 
     klines_syms = {r["symbol"] for r in klines_data}
     ticker_syms = {t["symbol"] for t in ticker_data}

@@ -1,136 +1,24 @@
-# Binance Data Streaming — Top 100 USDT Pairs
+# Binance Data Streaming
 
-Dữ liệu được thu thập từ Binance cho **99 cặp giao dịch USDT phổ biến nhất** (1 symbol bị loại do không có giao dịch thực tế trong 24h), bao gồm 3 loại dữ liệu: **klines**, **ticker_24h**, và **trades**.
+Dữ liệu thị trường tiền mã hóa được cào từ Binance cho **100 cặp giao dịch USDT phổ biến nhất** trong 3 tháng gần nhất.
 
 ---
 
-## Tổng quan
+## Nguồn dữ liệu
 
-| Thông số | Giá trị |
+| Nguồn | Endpoint |
 |---|---|
-| Số symbols | **99** (top 100 USDT theo quoteVolume, loại symbol không có klines) |
-| Ngày dữ liệu | **2026-04-17** (UTC) |
-| Klines interval | **1m** (1 phút), window 24h |
-| Nguồn klines & ticker | Binance REST API (`api.binance.com`) |
-| Nguồn trades | Binance Bulk Download (`data.binance.vision`) |
-| Tổng dung lượng | **~8.8 GB** (JSON: ~6.8 GB, CSV: ~2.3 GB) |
+| Klines & Ticker | Binance REST API (`api.binance.com`) |
+| Trades | Binance Bulk S3 (`data.binance.vision`) + fallback REST API |
 
 ---
 
-## Danh sách Symbols (99)
+## Cách chọn 100 symbols
 
-Được chọn dựa trên `quoteVolume` 24h từ lớn đến nhỏ, chỉ gồm các cặp giao dịch USDT.
-
-```
-USDCUSDT, BTCUSDT, ETHUSDT, XAUTUSDT, SOLUSDT, XRPUSDT, USD1USDT, DOGEUSDT,
-BNBUSDT, ORDIUSDT, AVNTUSDT, MOVRUSDT, ZECUSDT, PEPEUSDT, RLUSDUSDT, ADAUSDT,
-TAOUSDT, FDUSDUSDT, SUIUSDT, WLDUSDT, ... (xem active_symbols_matched.json)
-```
-
-> Symbol bị loại: `UTKUSDT` — có trong ticker nhưng không có giao dịch thực tế (0 klines).
-
----
-
-## Cấu trúc thư mục
-
-```
-output/
-├── json/                                      # Dữ liệu dạng JSON
-│   ├── klines_1m_20260418T061641Z.json        # Klines toàn bộ 99 symbols
-│   ├── ticker_24h_20260418T061641Z.json       # Ticker 24h toàn bộ 99 symbols
-│   ├── trades_<SYMBOL>_2026-04-17.json        # Trades từng symbol (99 files)
-│   ├── active_symbols_matched.json            # Danh sách 99 symbols đã khớp
-│   ├── top100_usdt_symbols.json               # Danh sách 100 symbols ban đầu
-│   └── trades_symbols_matched.json            # Symbols đã download trades thành công
-├── csv/                                       # Dữ liệu dạng CSV (cùng nội dung với JSON)
-│   ├── klines_1m_20260418T061641Z.csv
-│   ├── ticker_24h_20260418T061641Z.csv
-│   └── trades_<SYMBOL>_2026-04-17.csv         # Trades từng symbol (99 files)
-└── stream.log                                 # Log toàn bộ quá trình thu thập
-```
-
----
-
-## Mô tả từng loại dữ liệu
-
-### 1. Klines (`klines_1m_*.json / .csv`)
-
-Nến 1 phút (OHLCV) trong 24h qua cho toàn bộ 99 symbols.
-
-| Trường | Kiểu | Mô tả |
-|---|---|---|
-| `symbol` | string | Cặp giao dịch (ví dụ: `BTCUSDT`) |
-| `open_time` | int (ms) | Thời gian mở nến (Unix timestamp, milliseconds) |
-| `open_time_dt` | string (ISO 8601) | Thời gian mở nến dạng UTC |
-| `open` | string | Giá mở cửa |
-| `high` | string | Giá cao nhất |
-| `low` | string | Giá thấp nhất |
-| `close` | string | Giá đóng cửa |
-| `volume` | string | Khối lượng base asset |
-| `close_time` | int (ms) | Thời gian đóng nến |
-| `quote_asset_volume` | string | Khối lượng quote asset (USDT) |
-| `num_trades` | int | Số lượng giao dịch trong nến |
-| `taker_buy_base_vol` | string | Khối lượng mua taker (base) |
-| `taker_buy_quote_vol` | string | Khối lượng mua taker (USDT) |
-| `ignore` | string | Trường bỏ qua (Binance reserved) |
-
-**Thống kê:**
-- Tổng records: **142,560** (99 symbols × 1,440 nến/symbol)
-- Dung lượng: ~64 MB (JSON), ~18 MB (CSV)
-
----
-
-### 2. Ticker 24h (`ticker_24h_*.json / .csv`)
-
-Thống kê tổng hợp 24h cho 99 symbols, snapshot tại thời điểm stream.
-
-| Trường | Kiểu | Mô tả |
-|---|---|---|
-| `symbol` | string | Cặp giao dịch |
-| `priceChange` | string | Thay đổi giá tuyệt đối trong 24h |
-| `priceChangePercent` | string | Thay đổi giá theo % trong 24h |
-| `weightedAvgPrice` | string | Giá trung bình theo khối lượng |
-| `prevClosePrice` | string | Giá đóng cửa phiên trước |
-| `lastPrice` | string | Giá giao dịch gần nhất |
-| `lastQty` | string | Khối lượng giao dịch gần nhất |
-| `bidPrice` | string | Giá mua tốt nhất |
-| `bidQty` | string | Khối lượng mua tốt nhất |
-| `askPrice` | string | Giá bán tốt nhất |
-| `askQty` | string | Khối lượng bán tốt nhất |
-| `openPrice` | string | Giá mở cửa 24h |
-| `highPrice` | string | Giá cao nhất 24h |
-| `lowPrice` | string | Giá thấp nhất 24h |
-| `volume` | string | Tổng khối lượng base asset 24h |
-| `quoteVolume` | string | Tổng khối lượng USDT 24h |
-| `openTime` | int (ms) | Thời điểm bắt đầu window 24h |
-| `closeTime` | int (ms) | Thời điểm kết thúc window 24h |
-| `firstId` | int | Trade ID đầu tiên trong 24h |
-| `lastId` | int | Trade ID cuối cùng trong 24h |
-| `count` | int | Tổng số giao dịch trong 24h |
-
-**Thống kê:**
-- Tổng records: **99** (1 dòng/symbol)
-
----
-
-### 3. Trades (`trades_<SYMBOL>_2026-04-17.json / .csv`)
-
-Toàn bộ giao dịch khớp lệnh trong ngày 2026-04-17 (UTC) cho từng symbol. Tải từ Binance Bulk Download với xác minh checksum SHA-256.
-
-| Trường | Kiểu | Mô tả |
-|---|---|---|
-| `trade_id` | string | ID giao dịch duy nhất |
-| `price` | string | Giá khớp lệnh |
-| `qty` | string | Khối lượng base asset |
-| `quote_qty` | string | Khối lượng USDT |
-| `time` | string (ms) | Thời điểm giao dịch (Unix timestamp, milliseconds) |
-| `is_buyer_maker` | string | `True` nếu bên mua là maker |
-| `is_best_match` | string | `True` nếu là khớp lệnh tốt nhất |
-
-**Thống kê:**
-- Tổng records: **31,532,046** trades
-- Số files: 99 (1 file/symbol)
-- Dung lượng: ~6.7 GB (JSON), ~2.2 GB (CSV)
+- Lấy tất cả cặp giao dịch USDT đang hoạt động từ `/api/v3/exchangeInfo`
+- Fetch klines theo khung `1M` (monthly) trong 3 tháng gần nhất cho từng symbol
+- Tổng hợp `quoteAssetVolume` (khối lượng giao dịch quy về USDT) của 3 tháng
+- Xếp hạng giảm dần → lấy top 100
 
 ---
 
@@ -138,34 +26,137 @@ Toàn bộ giao dịch khớp lệnh trong ngày 2026-04-17 (UTC) cho từng sym
 
 | Script | Mô tả |
 |---|---|
-| `stream_binance.py` | Stream klines (1m) và ticker_24h qua Binance REST API |
-| `stream_trades_bulk.py` | Download trades qua Binance Bulk Download (S3) với checksum |
-
-### Cài đặt
-
-```bash
-pip install -r requirements.txt
-```
+| `stream_binance.py` | Stream klines (1m, 3 tháng) + ticker_24h → lưu CSV vào `DATA/` |
+| `stream_trades_bulk.py` | Download trades (7 ngày) via Bulk S3 + fallback REST → lưu CSV vào `DATA/` |
 
 ### Chạy
 
 ```bash
-# Stream klines + ticker_24h
+pip install -r requirements.txt
+
+# Bước 1: stream klines + ticker_24h
 python stream_binance.py
 
-# Download trades
+# Bước 2: stream trades
 python stream_trades_bulk.py
 ```
 
 ---
 
-## Đảm bảo tính nhất quán (Symbol Matching)
-
-Ba dataset **klines**, **ticker_24h**, và **trades** đều dùng đúng cùng **99 symbols**:
-
-1. `stream_binance.py` lấy top 100 USDT symbols theo quoteVolume → fetch klines → loại symbols có 0 candles → fetch ticker chỉ cho symbols còn lại → lưu `active_symbols_matched.json`
-2. `stream_trades_bulk.py` đọc `active_symbols_matched.json` làm input → đảm bảo trades khớp hoàn toàn với klines và ticker
+## Cấu trúc thư mục DATA/
 
 ```
-klines  ∩  ticker_24h  ∩  trades  =  99 symbols  ✓
+DATA/
+├── top100_usdt_symbols.csv         # Danh sách 100 symbols đã chọn
+├── active_symbols_matched.csv      # Symbols có đủ dữ liệu klines (input cho trades)
+├── klines_1m_<timestamp>.csv       # Klines 1 phút, 3 tháng, 100 symbols
+├── ticker_24h_<timestamp>.csv      # Thống kê 24h, 100 symbols
+├── trades_<SYMBOL>_7d.csv          # Trades 7 ngày, mỗi symbol 1 file (100 files)
+├── trades_symbols_matched.csv      # Symbols đã download trades thành công
+├── stream.log                      # Log của stream_binance.py
+└── stream_trades.log               # Log của stream_trades_bulk.py
+```
+
+---
+
+## Mô tả dữ liệu
+
+### 1. klines_1m_\<timestamp\>.csv
+
+Nến (candlestick) 1 phút cho 100 symbols trong **3 tháng** (`2026-01-17` → `2026-04-18`).
+
+| Cột | Kiểu | Mô tả |
+|---|---|---|
+| `symbol` | string | Tên cặp giao dịch (vd: `BTCUSDT`) |
+| `open_time` | int | Thời điểm mở nến (Unix ms) |
+| `open_time_dt` | string | Thời điểm mở nến (ISO 8601 UTC) |
+| `open` | float | Giá mở |
+| `high` | float | Giá cao nhất |
+| `low` | float | Giá thấp nhất |
+| `close` | float | Giá đóng |
+| `volume` | float | Khối lượng giao dịch (đơn vị base, vd: BTC) |
+| `close_time` | int | Thời điểm đóng nến (Unix ms) |
+| `quote_asset_volume` | float | Khối lượng quy về USDT |
+| `num_trades` | int | Số lệnh giao dịch trong nến |
+| `taker_buy_base_vol` | float | Khối lượng mua taker (base) |
+| `taker_buy_quote_vol` | float | Khối lượng mua taker (USDT) |
+| `ignore` | string | Trường dự phòng của Binance |
+
+- **Số dòng:** ~12,550,520 (100 symbols × ~91 ngày × 1,440 phút)
+- **Dung lượng:** ~2.1 GB
+
+---
+
+### 2. ticker_24h_\<timestamp\>.csv
+
+Thống kê rolling 24 giờ tại thời điểm chạy script, 1 dòng per symbol.
+
+| Cột | Kiểu | Mô tả |
+|---|---|---|
+| `symbol` | string | Tên cặp giao dịch |
+| `priceChange` | float | Thay đổi giá tuyệt đối (24h) |
+| `priceChangePercent` | float | Thay đổi giá phần trăm (24h) |
+| `weightedAvgPrice` | float | Giá trung bình có trọng số (24h) |
+| `prevClosePrice` | float | Giá đóng cửa phiên trước |
+| `lastPrice` | float | Giá giao dịch gần nhất |
+| `lastQty` | float | Khối lượng giao dịch gần nhất |
+| `bidPrice` | float | Giá mua tốt nhất |
+| `bidQty` | float | Khối lượng mua tốt nhất |
+| `askPrice` | float | Giá bán tốt nhất |
+| `askQty` | float | Khối lượng bán tốt nhất |
+| `openPrice` | float | Giá mở cửa (cách đây 24h) |
+| `highPrice` | float | Giá cao nhất (24h) |
+| `lowPrice` | float | Giá thấp nhất (24h) |
+| `volume` | float | Tổng khối lượng giao dịch (base, 24h) |
+| `quoteVolume` | float | Tổng khối lượng quy về USDT (24h) |
+| `openTime` | int | Thời điểm bắt đầu cửa sổ 24h (Unix ms) |
+| `closeTime` | int | Thời điểm kết thúc cửa sổ 24h (Unix ms) |
+| `firstId` | int | ID giao dịch đầu tiên |
+| `lastId` | int | ID giao dịch cuối cùng |
+| `count` | int | Tổng số giao dịch (24h) |
+
+- **Số dòng:** 100 (1 dòng/symbol)
+- **Dung lượng:** ~0.1 MB
+
+---
+
+### 3. trades_\<SYMBOL\>\_7d.csv
+
+Toàn bộ giao dịch thực tế (tick data) trong **7 ngày** gần nhất, mỗi symbol 1 file.
+
+| Cột | Kiểu | Mô tả |
+|---|---|---|
+| `trade_id` | int | ID giao dịch duy nhất |
+| `price` | float | Giá khớp lệnh |
+| `qty` | float | Khối lượng khớp lệnh (base) |
+| `quote_qty` | float | Khối lượng khớp lệnh (USDT) |
+| `time` | int | Thời điểm giao dịch (Unix ms) |
+| `is_buyer_maker` | bool | `True` nếu người mua là maker |
+| `is_best_match` | bool | `True` nếu là khớp lệnh tốt nhất |
+
+- **Số dòng:** ~130,740,142 tổng (vd: BTCUSDT có ~22,948,656 dòng)
+- **Dung lượng:** ~10.6 GB (100 files)
+- **Nguồn:** Binance Bulk S3; các symbols thiếu trên S3 fallback sang REST API (`/api/v3/aggTrades`)
+
+---
+
+## Thống kê tổng quan
+
+| Loại dữ liệu | Files | Dòng | Dung lượng |
+|---|---|---|---|
+| klines (1m, 3 tháng) | 1 | ~12,550,520 | ~2.1 GB |
+| ticker_24h | 1 | 100 | ~0.1 MB |
+| trades (7 ngày) | 100 | ~130,740,142 | ~10.6 GB |
+| **Tổng** | **102** | **~143,290,762** | **~12.7 GB** |
+
+---
+
+## Yêu cầu
+
+- Python 3.10+
+- Binance API Key (tùy chọn — cần thiết cho REST fallback của trades)
+- Tạo file `.env` với nội dung:
+
+```
+BINANCE_API_KEY=your_api_key_here
 ```
