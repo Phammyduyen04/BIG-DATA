@@ -67,6 +67,24 @@ export class MarketService {
         return MarketRepository.getKlines(symbolCode, intervalCode, start, end);
     }
 
+    /**
+     * Đếm số lượng klines trong khoảng thời gian
+     */
+    static async getKlinesCount(symbolCode, intervalCode, startTime, endTime) {
+        if (!symbolCode) throw new Error('symbol_code là bắt buộc');
+        if (!intervalCode || !VALID_INTERVALS.includes(intervalCode))
+            throw new Error(`interval_code không hợp lệ. Chọn: ${VALID_INTERVALS.join(', ')}`);
+        if (!startTime || !endTime) throw new Error('startTime và endTime là bắt buộc');
+
+        const start = new Date(startTime);
+        const end = new Date(endTime);
+        if (isNaN(start.getTime()) || isNaN(end.getTime()))
+            throw new Error('startTime hoặc endTime không phải ngày hợp lệ');
+        if (start >= end) throw new Error('startTime phải nhỏ hơn endTime');
+
+        return MarketRepository.getKlinesCount(symbolCode, intervalCode, start, end);
+    }
+
     // ──────────────────────────────────────────────
     // 3. Recent Trades
     // ──────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { getSymbols, getTicker24h, getKlines, getTrades, getKlineLatestTime } from './api/marketApi';
 import Ticker24h from './components/Ticker24h';
 import CandlestickChart from './components/CandlestickChart';
@@ -36,15 +36,19 @@ const INTERVAL_DEFAULT_RANGE = {
   '1d':  '3mo',
 };
 
-const INTERVAL_LIMIT = {
-  '1m':  500,
-  '5m':  600,
-  '15m': 800,
-  '30m': 1000,
-  '1h':  1000,
-  '4h':  1000,
-  '1d':  1000,
+// Milliseconds per interval — used to compute how many candles to fetch for lazy loading
+const INTERVAL_MS = {
+  '1m':  60_000,
+  '5m':  300_000,
+  '15m': 900_000,
+  '30m': 1_800_000,
+  '1h':  3_600_000,
+  '4h':  14_400_000,
+  '1d':  86_400_000,
 };
+
+// How many extra candles to fetch when panning to edge
+const LOAD_MORE_CANDLES = 300;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState(0);
@@ -57,6 +61,9 @@ export default function App() {
   const [klines, setKlines] = useState([]);
   const [trades, setTrades] = useState([]);
   const [error, setError] = useState(null);
+
+  // Track the earliest kline time we've loaded (for lazy-loading older data)
+  const earliestTimeRef = useRef(null);
 
   useEffect(() => {
     getSymbols()
@@ -74,11 +81,17 @@ export default function App() {
     const r = INTERVAL_DEFAULT_RANGE[iv];
     setSelectedRange(r);
     setActiveRange(r);
+    // Reset klines + earliest time when interval changes
+    setKlines([]);
+    earliestTimeRef.current = null;
   }, []);
 
   const handleRangeChange = useCallback(r => {
     setSelectedRange(r);
     setActiveRange(r);
+    // Reset klines + earliest time when range changes
+    setKlines([]);
+    earliestTimeRef.current = null;
   }, []);
 
   const handleChartZoom = useCallback(visibleMs => {
@@ -100,6 +113,7 @@ export default function App() {
     }
   }, [selectedSymbol]);
 
+  // ─── Initial klines fetch ───────────────────────────────
   const fetchKlines = useCallback(async () => {
     if (!selectedSymbol) return;
     try {
@@ -107,13 +121,53 @@ export default function App() {
       const latestTime = await getKlineLatestTime(selectedSymbol, selectedInterval);
       const end = latestTime ? new Date(latestTime) : new Date();
       const start = new Date(end.getTime() - (RANGE_MS[selectedRange] ?? RANGE_MS['1mo']));
-      const limit = INTERVAL_LIMIT[selectedInterval] ?? 1000;
-      const data = await getKlines(selectedSymbol, selectedInterval, start.toISOString(), end.toISOString(), limit);
+      const data = await getKlines(selectedSymbol, selectedInterval, start.toISOString(), end.toISOString());
+
       setKlines(data);
+      // Track earliest time for lazy loading
+      if (data.length > 0) {
+        const times = data.map(k => new Date(k.open_time).getTime());
+        earliestTimeRef.current = new Date(Math.min(...times));
+      }
     } catch (e) {
       console.error('Klines error:', e);
     }
   }, [selectedSymbol, selectedInterval, selectedRange]);
+
+  // ─── Lazy load more data when user pans to edge ────────
+  const handleLoadMore = useCallback(async (direction) => {
+    if (direction !== 'left' || !selectedSymbol || !earliestTimeRef.current) return;
+
+    try {
+      const intervalMs = INTERVAL_MS[selectedInterval] || 60_000;
+      const loadMs = LOAD_MORE_CANDLES * intervalMs;
+
+      const end = new Date(earliestTimeRef.current.getTime());
+      const start = new Date(end.getTime() - loadMs);
+
+      const moreData = await getKlines(
+        selectedSymbol,
+        selectedInterval,
+        start.toISOString(),
+        end.toISOString()
+      );
+
+      if (moreData.length > 0) {
+        // Update earliest time
+        const times = moreData.map(k => new Date(k.open_time).getTime());
+        earliestTimeRef.current = new Date(Math.min(...times));
+
+        // Merge & deduplicate by open_time
+        setKlines(prev => {
+          const existingTimes = new Set(prev.map(k => k.open_time));
+          const newItems = moreData.filter(k => !existingTimes.has(k.open_time));
+          return [...newItems, ...prev];
+        });
+      }
+    } catch (e) {
+      console.error('Load more klines error:', e);
+    }
+  }, [selectedSymbol, selectedInterval]);
 
   useEffect(() => { fetchTickerAndTrades(); }, [fetchTickerAndTrades]);
   useEffect(() => { fetchKlines(); }, [fetchKlines]);
@@ -163,7 +217,12 @@ export default function App() {
               onSymbolChange={setSelectedSymbol}
             />
             <div style={{ flex: 1, minHeight: 0, background: '#0b0e11' }}>
-              <CandlestickChart klines={klines} interval={selectedInterval} onZoom={handleChartZoom} onIntervalChange={handleIntervalChange} />
+              <CandlestickChart
+                klines={klines}
+                interval={selectedInterval}
+                onLoadMore={handleLoadMore}
+                onIntervalChange={handleIntervalChange}
+              />
             </div>
             <IntervalSelector
               selected={selectedInterval}

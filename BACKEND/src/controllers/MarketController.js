@@ -125,6 +125,22 @@ export class MarketController {
     }
 
     // ──────────────────────────────────────────────
+    // API 4: Klines Count
+    // ──────────────────────────────────────────────
+
+    /** GET /api/market/:symbol_code/klines/count?interval_code=1m&startTime=...&endTime=... */
+    static async getKlinesCount(req, res) {
+        try {
+            const { symbol_code } = req.params;
+            const { interval_code, startTime, endTime } = req.query;
+            const data = await MarketService.getKlinesCount(symbol_code, interval_code, startTime, endTime);
+            res.json({ success: true, data });
+        } catch (error) {
+            res.status(400).json({ success: false, message: error.message });
+        }
+    }
+
+    // ──────────────────────────────────────────────
     // Utility APIs
     // ──────────────────────────────────────────────
 

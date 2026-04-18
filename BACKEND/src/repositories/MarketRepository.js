@@ -106,6 +106,29 @@ export class MarketRepository {
         }));
     }
 
+    /**
+     * Đếm số lượng klines cho 1 symbol + interval trong khoảng thời gian
+     */
+    static async getKlinesCount(symbolCode, intervalCode, startTime, endTime) {
+        const symbol = await this._resolveSymbol(symbolCode);
+        if (!symbol) return 0;
+
+        const prisma = getPrismaClient();
+
+        const count = await prisma.factKline.count({
+            where: {
+                symbol_id: symbol.symbol_id,
+                interval_code: intervalCode,
+                open_time: {
+                    gte: new Date(startTime),
+                    lte: new Date(endTime),
+                },
+            },
+        });
+
+        return count;
+    }
+
     // ──────────────────────────────────────────────
     // 3. Recent Trades - giao dịch gần đây
     // ──────────────────────────────────────────────

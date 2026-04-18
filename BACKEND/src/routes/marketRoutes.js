@@ -30,6 +30,7 @@ router.get('/:symbol_code/intervals', MarketController.getSymbolIntervals);
 // ★ 3 API chính cho frontend
 router.get('/:symbol_code/ticker24h', MarketController.getTicker24h);
 router.get('/:symbol_code/klines/latest-time', MarketController.getKlineLatestTime);
+router.get('/:symbol_code/klines/count', MarketController.getKlinesCount);
 router.get('/:symbol_code/klines', MarketController.getKlines);
 router.get('/:symbol_code/trades', MarketController.getRecentTrades);
 

@@ -1,229 +1,270 @@
-import ReactApexChart from 'react-apexcharts';
-import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
+import { createChart, CrosshairMode, CandlestickSeries, HistogramSeries } from 'lightweight-charts';
 
-const INTERVALS = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
+/**
+ * CandlestickChart — Canvas-based chart using TradingView Lightweight Charts v5
+ *
+ * Props:
+ *   klines        — array of kline objects from API
+ *   interval      — current interval code ('1m', '5m', …)
+ *   onLoadMore    — callback(direction: 'left') called when user pans to data edge
+ *   onIntervalChange — callback(newInterval) for zoom in/out buttons
+ */
+export default function CandlestickChart({
+  klines,
+  interval = '1h',
+  onLoadMore,
+  onIntervalChange,
+}) {
+  const containerRef = useRef(null);
+  const chartRef = useRef(null);
+  const candleSeriesRef = useRef(null);
+  const volumeSeriesRef = useRef(null);
+  const klinesLenRef = useRef(0);
+  const isLoadingMoreRef = useRef(false);
 
-const DATETIME_FORMATTER = {
-  '1m':  { hour: 'HH:mm', minute: 'HH:mm', day: 'dd MMM', month: "MMM 'yy", year: 'yyyy' },
-  '5m':  { hour: 'HH:mm', minute: 'HH:mm', day: 'dd MMM', month: "MMM 'yy", year: 'yyyy' },
-  '15m': { hour: 'HH:mm', minute: 'HH:mm', day: 'dd MMM', month: "MMM 'yy", year: 'yyyy' },
-  '30m': { hour: 'HH:mm', minute: 'HH:mm', day: 'dd MMM', month: "MMM 'yy", year: 'yyyy' },
-  '1h':  { hour: 'dd MMM HH:mm', day: 'dd MMM', month: "MMM 'yy", year: 'yyyy' },
-  '4h':  { hour: 'dd MMM HH:mm', day: 'dd MMM', month: "MMM 'yy", year: 'yyyy' },
-  '1d':  { day: 'dd MMM', month: "MMM 'yy", year: 'yyyy' },
-};
+  // Legend state (OHLCV display on hover)
+  const [legend, setLegend] = useState(null);
 
-const IconCursor = ({ active }) => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-    stroke={active ? '#f0b90b' : '#848e9c'} strokeWidth="1.8"
-    strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 3l14 9-7 1-4 7z"/>
-  </svg>
-);
-
-const IconHand = ({ active }) => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-    stroke={active ? '#f0b90b' : '#848e9c'} strokeWidth="1.8"
-    strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 11V8a2 2 0 0 0-4 0v3M14 11V6a2 2 0 0 0-4 0v5M10 11V8a2 2 0 0 0-4 0v6a8 8 0 0 0 16 0v-3a2 2 0 0 0-4 0"/>
-  </svg>
-);
-
-const IconZoomIn = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-    stroke="#848e9c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="11" cy="11" r="7"/>
-    <path d="m21 21-4.35-4.35M11 8v6M8 11h6"/>
-  </svg>
-);
-
-const IconZoomOut = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-    stroke="#848e9c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="11" cy="11" r="7"/>
-    <path d="m21 21-4.35-4.35M8 11h6"/>
-  </svg>
-);
-
-const Btn = ({ onClick, title, active, children }) => (
-  <button
-    onClick={onClick}
-    title={title}
-    style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      width: 28, height: 28, borderRadius: 4, cursor: 'pointer',
-      border: 'none', background: active ? '#2b3139' : 'transparent',
-      transition: 'background 0.15s',
-    }}
-    onMouseEnter={e => e.currentTarget.style.background = '#2b3139'}
-    onMouseLeave={e => e.currentTarget.style.background = active ? '#2b3139' : 'transparent'}
-  >
-    {children}
-  </button>
-);
-
-// 'zoom' = cursor selection (default), 'pan' = hand drag
-export default function CandlestickChart({ klines, interval = '1h', onZoom, onIntervalChange }) {
-  const [toolMode, setToolMode] = useState(interval === '1m' ? 'pan' : 'zoom');
-  const [chartKey, setChartKey] = useState(0);
-
+  // ─── Create chart on mount ──────────────────────────────
   useEffect(() => {
-    setToolMode(interval === '1m' ? 'pan' : 'zoom');
-    setChartKey(k => k + 1);
-  }, [interval]);
+    if (!containerRef.current) return;
 
-  const setMode = useCallback((mode) => {
-    setToolMode(mode);
-    setChartKey(k => k + 1);
+    const chart = createChart(containerRef.current, {
+      layout: {
+        background: { color: '#0b0e11' },
+        textColor: '#848e9c',
+        fontFamily: "'Inter', 'Segoe UI', sans-serif",
+        fontSize: 11,
+        attributionLogo: false,
+      },
+      grid: {
+        vertLines: { color: '#1e2329' },
+        horzLines: { color: '#1e2329' },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: { color: '#848e9c44', width: 1, style: 0 },
+        horzLine: { color: '#848e9c44', width: 1, style: 0 },
+      },
+      rightPriceScale: {
+        borderColor: '#2b3139',
+        scaleMargins: { top: 0.05, bottom: 0.25 },
+      },
+      timeScale: {
+        borderColor: '#2b3139',
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 5,
+        barSpacing: 6,
+        minBarSpacing: 2,
+      },
+      handleScroll: { vertTouchDrag: false },
+      handleScale: { axisPressedMouseMove: true },
+    });
+
+    // Candlestick series (v5 API: chart.addSeries)
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: '#0ecb81',
+      downColor: '#f6465d',
+      borderUpColor: '#0ecb81',
+      borderDownColor: '#f6465d',
+      wickUpColor: '#0ecb81',
+      wickDownColor: '#f6465d',
+    });
+
+    // Volume series (histogram overlay at bottom) (v5 API: chart.addSeries)
+    const volumeSeries = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: 'volume' },
+      priceScaleId: 'volume',
+    });
+
+    chart.priceScale('volume').applyOptions({
+      scaleMargins: { top: 0.8, bottom: 0 },
+      drawTicks: false,
+    });
+
+    // Crosshair move → update legend
+    chart.subscribeCrosshairMove((param) => {
+      if (!param || !param.time) {
+        setLegend(null);
+        return;
+      }
+      const candleData = param.seriesData?.get(candleSeries);
+      const volumeData = param.seriesData?.get(volumeSeries);
+      if (candleData) {
+        setLegend({
+          open: candleData.open,
+          high: candleData.high,
+          low: candleData.low,
+          close: candleData.close,
+          volume: volumeData?.value ?? 0,
+          isUp: candleData.close >= candleData.open,
+        });
+      }
+    });
+
+    chartRef.current = chart;
+    candleSeriesRef.current = candleSeries;
+    volumeSeriesRef.current = volumeSeries;
+
+    // ResizeObserver for responsive
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        chart.applyOptions({ width, height });
+      }
+    });
+    resizeObserver.observe(containerRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+    };
   }, []);
 
-  const handleZoomIn = useCallback(() => {
-    const idx = INTERVALS.indexOf(interval);
-    if (idx > 0) onIntervalChange?.(INTERVALS[idx - 1]);
-  }, [interval, onIntervalChange]);
+  // ─── Update data when klines change ─────────────────────
+  useEffect(() => {
+    if (!candleSeriesRef.current || !volumeSeriesRef.current || !klines?.length) return;
 
-  const handleZoomOut = useCallback(() => {
-    const idx = INTERVALS.indexOf(interval);
-    if (idx < INTERVALS.length - 1) onIntervalChange?.(INTERVALS[idx + 1]);
-  }, [interval, onIntervalChange]);
-
-  const handleZoomOrScroll = useCallback((_, { xaxis }) => {
-    if (onZoom && xaxis?.min != null && xaxis?.max != null) {
-      onZoom(xaxis.max - xaxis.min);
-    }
-  }, [onZoom]);
-
-  const series = useMemo(() => {
-    if (!klines?.length) return [];
-    const sorted = [...klines].sort((a, b) => new Date(a.open_time) - new Date(b.open_time));
-    const candleData = sorted.map(k => ({
-      x: new Date(k.open_time),
-      y: [parseFloat(k.open), parseFloat(k.high), parseFloat(k.low), parseFloat(k.close)],
-    }));
-    const volumeData = sorted.map(k => ({
-      x: new Date(k.open_time),
-      y: parseFloat(k.volume_base) || 0,
-      fillColor: parseFloat(k.close) >= parseFloat(k.open) ? '#0ecb8166' : '#f6465d66',
-    }));
-    return [
-      { name: 'Candle', type: 'candlestick', data: candleData },
-      { name: 'Volume', type: 'bar', data: volumeData },
-    ];
-  }, [klines]);
-
-  const maxVolume = useMemo(() => {
-    if (!klines?.length) return 1;
-    return Math.max(...klines.map(k => parseFloat(k.volume_base) || 0));
-  }, [klines]);
-
-  const options = useMemo(() => ({
-    chart: {
-      type: 'candlestick',
-      background: '#0b0e11',
-      toolbar: { show: false, autoSelected: toolMode },
-      zoom: { enabled: true, type: 'x' },
-      animations: { enabled: false },
-      events: { zoomed: handleZoomOrScroll, scrolled: handleZoomOrScroll },
-    },
-    theme: { mode: 'dark' },
-    xaxis: {
-      type: 'datetime',
-      labels: {
-        style: { colors: '#848e9c' },
-        datetimeFormatter: DATETIME_FORMATTER[interval] ?? DATETIME_FORMATTER['1h'],
-      },
-      axisBorder: { color: '#2b3139' },
-      axisTicks: { color: '#2b3139' },
-    },
-    yaxis: [
-      {
-        seriesName: 'Candle',
-        tooltip: { enabled: true },
-        labels: { style: { colors: '#848e9c' }, formatter: v => v?.toLocaleString() },
-      },
-      {
-        seriesName: 'Volume',
-        opposite: false, show: false,
-        max: maxVolume * 5, min: 0,
-        labels: { show: false },
-      },
-    ],
-    grid: { borderColor: '#1e2329', strokeDashArray: 0 },
-    plotOptions: {
-      candlestick: {
-        colors: { upward: '#0ecb81', downward: '#f6465d' },
-        wick: { useFillColor: true },
-      },
-      bar: { columnWidth: '80%' },
-    },
-    stroke: { show: true, width: [1, 0], colors: ['transparent', 'transparent'] },
-    tooltip: {
-      shared: true, theme: 'dark',
-      x: { format: 'dd MMM yyyy HH:mm' },
-      y: [
-        {
-          formatter: (val, { dataPointIndex, w }) => {
-            const d = w.config.series[0]?.data?.[dataPointIndex];
-            if (!d) return '';
-            const [o, h, l, c] = d.y;
-            return `O: ${o?.toLocaleString()}  H: ${h?.toLocaleString()}  L: ${l?.toLocaleString()}  C: ${c?.toLocaleString()}`;
-          },
-        },
-        {
-          formatter: v => (v != null ? v.toLocaleString(undefined, { maximumFractionDigits: 4 }) : ''),
-          title: { formatter: () => 'Vol: ' },
-        },
-      ],
-    },
-    legend: { show: false },
-    dataLabels: { enabled: false },
-  }), [interval, maxVolume, handleZoomOrScroll, toolMode]);
-
-  if (!klines?.length) {
-    return (
-      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', fontSize: 14 }}>
-        Không có dữ liệu klines
-      </div>
+    // Sort by open_time ascending (LW Charts requires sorted data)
+    const sorted = [...klines].sort(
+      (a, b) => new Date(a.open_time).getTime() - new Date(b.open_time).getTime()
     );
-  }
 
-  const canZoomIn  = INTERVALS.indexOf(interval) > 0;
-  const canZoomOut = INTERVALS.indexOf(interval) < INTERVALS.length - 1;
+    const candleData = sorted.map((k) => ({
+      time: Math.floor(new Date(k.open_time).getTime() / 1000),
+      open: parseFloat(k.open),
+      high: parseFloat(k.high),
+      low: parseFloat(k.low),
+      close: parseFloat(k.close),
+    }));
 
+    const volumeData = sorted.map((k) => {
+      const o = parseFloat(k.open);
+      const c = parseFloat(k.close);
+      return {
+        time: Math.floor(new Date(k.open_time).getTime() / 1000),
+        value: parseFloat(k.volume_base) || 0,
+        color: c >= o ? '#0ecb8140' : '#f6465d40',
+      };
+    });
+
+    candleSeriesRef.current.setData(candleData);
+    volumeSeriesRef.current.setData(volumeData);
+
+    // Only fit content on initial load or when data count changes drastically (interval switch)
+    const prevLen = klinesLenRef.current;
+    const newLen = klines.length;
+    if (prevLen === 0 || Math.abs(newLen - prevLen) > newLen * 0.3) {
+      chartRef.current?.timeScale().fitContent();
+    }
+    klinesLenRef.current = newLen;
+  }, [klines]);
+
+  // ─── Lazy-load on pan to left edge ─────────────────────
+  useEffect(() => {
+    if (!chartRef.current || !onLoadMore) return;
+
+    const handler = (newRange) => {
+      if (!newRange || isLoadingMoreRef.current) return;
+      // When user pans left and visible range starts near the beginning of data
+      if (newRange.from !== null && newRange.from < 10) {
+        isLoadingMoreRef.current = true;
+        onLoadMore('left');
+        // Reset after a delay to prevent rapid re-fetching
+        setTimeout(() => {
+          isLoadingMoreRef.current = false;
+        }, 2000);
+      }
+    };
+
+    chartRef.current.timeScale().subscribeVisibleLogicalRangeChange(handler);
+    return () => {
+      chartRef.current?.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
+    };
+  }, [onLoadMore]);
+
+  // ─── Format helpers ─────────────────────────────────────
+  const fmt = (v) => {
+    if (v == null) return '-';
+    if (v >= 1) return v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return v.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 8 });
+  };
+
+  const fmtVol = (v) => {
+    if (v == null) return '-';
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return (v / 1e3).toFixed(2) + 'K';
+    return v.toFixed(2);
+  };
+
+  // ─── Render ─────────────────────────────────────────────
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      {/* Custom toolbar */}
-      <div style={{
-        position: 'absolute', top: 8, right: 12, zIndex: 10,
-        display: 'flex', gap: 2, background: '#161a1e',
-        borderRadius: 6, padding: '2px 4px', border: '1px solid #2b3139',
-      }}>
-        <Btn onClick={() => setMode('zoom')} active={toolMode === 'zoom'}
-          title="Cursor — kéo chọn vùng để phóng to (mặc định)">
-          <IconCursor active={toolMode === 'zoom'} />
-        </Btn>
-        <Btn onClick={() => setMode('pan')} active={toolMode === 'pan'}
-          title="Pan — nhấn giữ để kéo trái/phải">
-          <IconHand active={toolMode === 'pan'} />
-        </Btn>
-        <Btn onClick={handleZoomIn} active={false}
-          title={canZoomIn ? `Zoom in → ${INTERVALS[INTERVALS.indexOf(interval) - 1]}` : 'Đã ở interval nhỏ nhất'}>
-          <IconZoomIn />
-        </Btn>
-        <Btn onClick={handleZoomOut} active={false}
-          title={canZoomOut ? `Zoom out → ${INTERVALS[INTERVALS.indexOf(interval) + 1]}` : 'Đã ở interval lớn nhất'}>
-          <IconZoomOut />
-        </Btn>
+      {/* OHLCV Legend Overlay */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 8,
+          left: 12,
+          zIndex: 10,
+          display: 'flex',
+          gap: 12,
+          fontSize: 11,
+          fontFamily: "'Inter', 'Segoe UI', monospace",
+          pointerEvents: 'none',
+          color: '#848e9c',
+        }}
+      >
+        <span style={{ color: '#d1d5db', fontWeight: 600 }}>{interval.toUpperCase()}</span>
+        {legend && (
+          <>
+            <span>
+              O <b style={{ color: legend.isUp ? '#0ecb81' : '#f6465d' }}>{fmt(legend.open)}</b>
+            </span>
+            <span>
+              H <b style={{ color: legend.isUp ? '#0ecb81' : '#f6465d' }}>{fmt(legend.high)}</b>
+            </span>
+            <span>
+              L <b style={{ color: legend.isUp ? '#0ecb81' : '#f6465d' }}>{fmt(legend.low)}</b>
+            </span>
+            <span>
+              C <b style={{ color: legend.isUp ? '#0ecb81' : '#f6465d' }}>{fmt(legend.close)}</b>
+            </span>
+            <span>
+              Vol <b style={{ color: '#848e9c' }}>{fmtVol(legend.volume)}</b>
+            </span>
+          </>
+        )}
       </div>
 
-      <ReactApexChart
-        key={chartKey}
-        options={options}
-        series={series}
-        type="candlestick"
-        width="100%"
-        height="100%"
+      {/* Chart Container */}
+      <div
+        ref={containerRef}
+        style={{ width: '100%', height: '100%' }}
       />
+
+      {/* No data message */}
+      {(!klines || klines.length === 0) && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#6b7280',
+            fontSize: 14,
+            pointerEvents: 'none',
+          }}
+        >
+          Không có dữ liệu klines
+        </div>
+      )}
     </div>
   );
 }
