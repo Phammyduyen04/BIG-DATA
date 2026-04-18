@@ -33,7 +33,7 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
         print("[trades] REDUCED MODE ENABLED: Skipping trades processing due to missing input data.")
         return
 
-    from etl_utils import emulate_listdir, load_contract_df
+    from etl_utils import load_contract_df
     sym_map = load_symbol_map(spark, jdbc_url, jdbc_props)
     trades_base = f"{data_base_path.rstrip('/')}/trades"
 

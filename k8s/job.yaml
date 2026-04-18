@@ -38,21 +38,57 @@ spec:
           - "--conf"
           - "spark.kubernetes.driverEnv.MINIO_SECRET_KEY=$(MINIO_SECRET_KEY)"
           - "--conf"
+          - "spark.kubernetes.driverEnv.MINIO_BUCKET=$(MINIO_BUCKET)"
+          - "--conf"
+          - "spark.kubernetes.driverEnv.MINIO_SECURE=$(MINIO_SECURE)"
+          - "--conf"
+          - "spark.kubernetes.driverEnv.JDBC_URL=$(JDBC_URL)"
+          - "--conf"
+          - "spark.kubernetes.driverEnv.JDBC_USER=$(JDBC_USER)"
+          - "--conf"
+          - "spark.kubernetes.driverEnv.JDBC_PASSWORD=$(JDBC_PASSWORD)"
+          - "--conf"
+          - "spark.kubernetes.driverEnv.DATA_BASE_PATH=$(DATA_BASE_PATH)"
+          - "--conf"
           - "spark.executorEnv.MINIO_ENDPOINT=$(MINIO_ENDPOINT)"
           - "--conf"
           - "spark.executorEnv.MINIO_ACCESS_KEY=$(MINIO_ACCESS_KEY)"
           - "--conf"
           - "spark.executorEnv.MINIO_SECRET_KEY=$(MINIO_SECRET_KEY)"
+          - "--conf"
+          - "spark.executorEnv.MINIO_BUCKET=$(MINIO_BUCKET)"
+          - "--conf"
+          - "spark.executorEnv.MINIO_SECURE=$(MINIO_SECURE)"
+          - "--conf"
+          - "spark.executorEnv.JDBC_URL=$(JDBC_URL)"
+          - "--conf"
+          - "spark.executorEnv.JDBC_USER=$(JDBC_USER)"
+          - "--conf"
+          - "spark.executorEnv.JDBC_PASSWORD=$(JDBC_PASSWORD)"
+          - "--conf"
+          - "spark.executorEnv.DATA_BASE_PATH=$(DATA_BASE_PATH)"
           # Trỏ đến Entrypoint Launcher
           - "local:///opt/project/spark/jobs/launcher.py"
         env:
-        # Lấy thông tin cơ bản để Submitter có thể truyền sang Driver/Executor
+        # Load tất cả từ ConfigMap/Secret để Submitter truyền tham số
         - name: MINIO_ENDPOINT
           valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_ENDPOINT } }
+        - name: MINIO_BUCKET
+          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_BUCKET } }
+        - name: MINIO_SECURE
+          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_SECURE } }
+        - name: DATA_BASE_PATH
+          valueFrom: { configMapKeyRef: { name: etl-config, key: DATA_BASE_PATH } }
+        - name: JDBC_URL
+          valueFrom: { configMapKeyRef: { name: etl-config, key: JDBC_URL } }
         - name: MINIO_ACCESS_KEY
           valueFrom: { secretKeyRef: { name: etl-secrets, key: MINIO_ACCESS_KEY } }
         - name: MINIO_SECRET_KEY
           valueFrom: { secretKeyRef: { name: etl-secrets, key: MINIO_SECRET_KEY } }
+        - name: JDBC_USER
+          valueFrom: { secretKeyRef: { name: etl-secrets, key: JDBC_USER } }
+        - name: JDBC_PASSWORD
+          valueFrom: { secretKeyRef: { name: etl-secrets, key: JDBC_PASSWORD } }
         resources:
           requests:
             cpu: "250m"
