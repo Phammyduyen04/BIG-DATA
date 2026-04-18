@@ -34,8 +34,8 @@ Hệ thống chạy trên Docker Compose. Sau khi khởi động (`docker compos
 Dữ liệu được lưu trong bucket `binance/` theo cấu trúc Schema-on-Read, phân cấp như sau:
 
 *   **Klines**: `raw/klines/interval=1m/date=YYYY-MM-DD/symbol=.../hour=HH/part-XXXXX.json`
-*   **Order Book**: `raw/depth/date=YYYY-MM-DD/symbol=.../hour=HH/part-XXXXX.json`
 *   **Ticker 24h**: `raw/ticker/date=YYYY-MM-DD/symbol=.../hour=HH/part-XXXXX.json`
+*   **Trades**: `raw/trades/date=YYYY-MM-DD/symbol=.../hour=HH/part-XXXXX.json`
 
 ---
 

@@ -4,7 +4,6 @@ REST Collector
 - fetch_top_symbols()   : lấy top N đồng theo 24h quote volume
 - fetch_all_tickers()   : snapshot tất cả ticker 24h (1 request duy nhất)
 - fetch_klines()        : nến lịch sử
-- fetch_order_book()    : snapshot order book
 
 Rate limiting: dùng asyncio.Semaphore để không vượt 1200 weight/phút.
 """
@@ -175,19 +174,7 @@ class RestCollector:
             for k in raw
         ]
 
-    async def fetch_order_book(self, symbol: str, limit: int = 20) -> dict | None:
-        raw = await self._get("/depth", {"symbol": symbol, "limit": limit})
-        if not raw:
-            return None
-        return {
-            "symbol":         symbol,
-            "last_update_id": int(raw["lastUpdateId"]),
-            "bids":           raw["bids"],
-            "asks":           raw["asks"],
-            "event_time":     None,
-            "source":         "rest_snapshot",
-            "timestamp":      self._now_iso(),
-        }
+
 
     # ── batch helpers ─────────────────────────────────────────────────────────
 
@@ -210,22 +197,3 @@ class RestCollector:
 
         logger.info("[REST] Klines batch: %d symbols → %d nến", len(symbols), len(all_records))
         return all_records
-
-    async def fetch_order_books_batch(
-        self,
-        symbols: list[str],
-        limit: int,
-    ) -> list[dict]:
-        """Fetch order book cho nhiều symbol đồng thời."""
-        tasks   = [self.fetch_order_book(s, limit) for s in symbols]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        records = []
-        for sym, res in zip(symbols, results):
-            if isinstance(res, Exception):
-                logger.error("[REST] Depth lỗi %s: %s", sym, res)
-            elif res:
-                records.append(res)
-
-        logger.info("[REST] Depth batch: %d/%d symbols", len(records), len(symbols))
-        return records

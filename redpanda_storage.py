@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 # Topics
 TOPIC_KLINE  = "binance.kline.1m.raw"
-TOPIC_DEPTH  = "binance.depth.raw"
 TOPIC_TICKER = "binance.ticker.raw"
 TOPIC_TRADE  = "binance.trade.raw"
 
@@ -46,7 +45,6 @@ class RedpandaStorage:
 
         self._counts = {
             TOPIC_KLINE: 0,
-            TOPIC_DEPTH: 0,
             TOPIC_TICKER: 0,
             TOPIC_TRADE: 0
         }
@@ -64,9 +62,6 @@ class RedpandaStorage:
     def save_kline(self, record: dict):
         self._send(TOPIC_KLINE, record)
 
-    def save_depth(self, record: dict):
-        self._send(TOPIC_DEPTH, record)
-
     def save_ticker(self, record: dict):
         self._send(TOPIC_TICKER, record)
 
@@ -76,7 +71,6 @@ class RedpandaStorage:
     def summary(self) -> dict[str, int]:
         return {
             "binance.kline.1m.raw": self._counts[TOPIC_KLINE],
-            "binance.depth.raw":    self._counts[TOPIC_DEPTH],
             "binance.ticker.raw":   self._counts[TOPIC_TICKER],
             "binance.trade.raw":    self._counts[TOPIC_TRADE]
         }

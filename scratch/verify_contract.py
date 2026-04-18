@@ -1,3 +1,4 @@
+
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -7,63 +8,64 @@ import unittest
 from unittest.mock import MagicMock
 from consumer_to_minio import BufferManager
 
-class TestContractRestoration(unittest.TestCase):
+class TestContractRestorationV2(unittest.TestCase):
     def setUp(self):
-        # Mock S3 client as it's required by BufferManager
+        # Mock S3 client
         self.mock_s3 = MagicMock()
         self.bucket = "test-bucket"
+        # Small batch size to trigger flush or just check internal buffer
         self.mgr = BufferManager(self.mock_s3, self.bucket, 100, 60)
 
-    def test_ticker_contract_restoration(self):
-        """Test if ticker snake_case fields are restored to camelCase."""
+    def test_ticker_normalization_and_persistence(self):
+        """
+        Verify ticker contract mapping AND that BufferManager persists the 
+        NORMALIZED message, not the raw one.
+        """
         raw_msg = {
             "symbol": "BTCUSDT",
             "price_change": 100.5,
-            "price_change_pct": 1.2,
-            "weighted_avg_price": 40000.0,
-            "prev_close_price": 39900.0,
-            "last_price": 40100.0,
-            "last_qty": 0.5,
-            "bid_price": 40090.0,
-            "ask_price": 40110.0,
-            "open_price": 39500.0,
-            "high_price": 40500.0,
-            "low_price": 39000.0,
-            "volume": 1500.0,
-            "quote_volume": 60000000.0,
             "num_trades": 5000,
             "event_time": 1713430000000
         }
         
-        restored = self.mgr._restore_contract("binance.ticker.raw", raw_msg)
+        # 1. Add to buffer
+        self.mgr.add("binance.ticker.raw", raw_msg)
         
-        # Verify specific critical fields
-        self.assertEqual(restored["priceChange"], 100.5)
-        self.assertEqual(restored["priceChangePercent"], 1.2)
-        self.assertEqual(restored["lastPrice"], 40100.0)
-        self.assertEqual(restored["count"], 5000) # num_trades -> count
-        self.assertEqual(restored["quoteVolume"], 60000000.0)
+        # 2. Inspect the buffer
+        # Buffer keys: (topic, symbol, date, hour)
+        key = ("binance.ticker.raw", "BTCUSDT", "2024-04-18", "08")
+        self.assertIn(key, self.mgr._buffers)
         
-        # Verify old keys are gone
-        self.assertNotIn("price_change", restored)
-        self.assertNotIn("num_trades", restored)
+        stored_msg = self.mgr._buffers[key][0]
         
-        print("✅ Ticker contract restoration verified.")
+        # 3. VERIFY BUG FIX: Normalized fields must be present in stored msg
+        self.assertEqual(stored_msg["priceChange"], 100.5)
+        self.assertEqual(stored_msg["count"], 5000)
+        
+        # 4. VERIFY BUG FIX: Raw fields must NOT be present in stored msg
+        self.assertNotIn("price_change", stored_msg)
+        self.assertNotIn("num_trades", stored_msg)
+        
+        print("✅ BUG FIX VERIFIED: BufferManager persists normalized ticker.")
 
-    def test_kline_contract_restoration(self):
-        """Test if kline fields are restored."""
+    def test_kline_normalization_and_persistence(self):
+        """Verify kline contract and persistence."""
         raw_msg = {
-            "symbol": "BTCUSDT",
+            "symbol": "ETHUSDT",
             "taker_buy_quote_volume": 200.5,
             "event_time": 1713430000000
         }
         
-        restored = self.mgr._restore_contract("binance.kline.1m.raw", raw_msg)
+        self.mgr.add("binance.kline.1m.raw", raw_msg)
         
-        self.assertEqual(restored["taker_buy_quote_vol"], 200.5)
-        self.assertNotIn("taker_buy_quote_volume", restored)
+        key = ("binance.kline.1m.raw", "ETHUSDT", "2024-04-18", "08")
+        stored_msg = self.mgr._buffers[key][0]
         
-        print("✅ Kline contract restoration verified.")
+        # Specific Contract Check
+        self.assertEqual(stored_msg["taker_buy_quote_vol"], 200.5)
+        self.assertNotIn("taker_buy_quote_volume", stored_msg)
+        
+        print("✅ BUG FIX VERIFIED: BufferManager persists normalized klines.")
 
 if __name__ == "__main__":
     unittest.main()

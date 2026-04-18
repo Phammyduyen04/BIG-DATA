@@ -53,7 +53,6 @@ FLUSH_INTERVAL_SECONDS  = int(os.getenv("FLUSH_INTERVAL_SECONDS", "60"))
 
 TOPICS = [
     "binance.kline.1m.raw",
-    "binance.depth.raw",
     "binance.ticker.raw",
     "binance.trade.raw",
 ]
@@ -61,7 +60,6 @@ TOPICS = [
 # Topic → MinIO prefix mapping
 TOPIC_PREFIX_MAP = {
     "binance.kline.1m.raw": "raw/klines/interval=1m",
-    "binance.depth.raw":    "raw/depth",
     "binance.ticker.raw":   "raw/ticker",
     "binance.trade.raw":    "raw/trades",
 }
@@ -141,11 +139,10 @@ class BufferManager:
 
     def add(self, topic: str, message: dict):
         """Add a message to the appropriate buffer."""
-        # WRITER BOUNDARY: Ensure Storage Contract matches downstream Spark ETL expectations
         msg = self._restore_contract(topic, message)
 
         symbol   = msg.get("symbol", "UNKNOWN")
-        event_ts = message.get("event_time") or int(time.time() * 1000)
+        event_ts = msg.get("event_time") or int(time.time() * 1000)
 
         # Derive date and hour from event time
         dt = datetime.fromtimestamp(event_ts / 1000, tz=timezone.utc)
@@ -155,7 +152,7 @@ class BufferManager:
         key = (topic, symbol, date_str, hour_str)
 
         with self._lock:
-            self._buffers[key].append(message)
+            self._buffers[key].append(msg)
             self.total_messages += 1
 
             # Initialize last_flush if new key

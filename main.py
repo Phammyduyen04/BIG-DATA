@@ -80,16 +80,6 @@ async def run():
                 stats["ws_klines"], r["symbol"], r["close"], r["is_closed"],
             )
 
-    async def on_depth(r: dict):
-        stats["ws_depth"] += 1
-        storage.save_depth(r)
-        if stats["ws_depth"] % 2000 == 0:
-            bid = r["bids"][0][0] if r["bids"] else "-"
-            ask = r["asks"][0][0] if r["asks"] else "-"
-            logger.info(
-                "[WS] depth=%d | %s bid=%s ask=%s",
-                stats["ws_depth"], r["symbol"], bid, ask,
-            )
     async def on_ticker(r: dict):
         stats["ws_ticker"] += 1
         storage.save_ticker(r)
@@ -111,7 +101,6 @@ async def run():
     ws = WebSocketCollector(
         base_url  = config.WS_BASE_URL,
         on_kline  = on_kline,
-        on_depth  = on_depth,
         on_ticker = on_ticker,
         on_trade  = on_trade,
     )
@@ -143,15 +132,11 @@ async def run():
             storage.save_kline(k)
         stats["hist_klines"] += len(klines)
 
-        # Order book: concurrent với semaphore
-        books = await rest.fetch_order_books_batch(symbols, config.DEPTH_LEVELS)
-        for b in books:
-            storage.save_depth(b)
-        stats["hist_depth"] += len(books)
+        stats["hist_klines"] += len(klines)
 
         logger.info(
-            "[REST] Historical xong – klines=%d  books=%d  tickers=%d",
-            stats["hist_klines"], stats["hist_depth"], stats["hist_ticker"],
+            "[REST] Historical xong – klines=%d  tickers=%d",
+            stats["hist_klines"], stats["hist_ticker"],
         )
 
     # ── TASK B: WebSocket real-time ───────────────────────────────────────────
@@ -168,16 +153,11 @@ async def run():
                 for t in tickers:
                     storage.save_ticker(t)
 
-                # Order book: concurrent
-                books = await rest.fetch_order_books_batch(symbols, config.DEPTH_LEVELS)
-                for b in books:
-                    storage.save_depth(b)
-
                 s = storage.summary()
                 total = sum(s.values())
                 logger.info(
-                    "[REST] Refresh OK – total records in Redpanda: %d | ws klines=%d depth=%d ticker=%d",
-                    total, stats["ws_klines"], stats["ws_depth"], stats["ws_ticker"],
+                    "[REST] Refresh OK – total records in Redpanda: %d | ws klines=%d ticker=%d trade=%d",
+                    total, stats["ws_klines"], stats["ws_ticker"], stats["ws_trade"],
                 )
             except Exception as e:
                 logger.error("[REST] Refresh lỗi: %s", e)
@@ -225,10 +205,10 @@ async def run():
     final = storage.summary()
     logger.info("=" * 70)
     logger.info("  FINAL SUMMARY")
-    logger.info("  Historical : klines=%d  books=%d  tickers=%d",
-                stats["hist_klines"], stats["hist_depth"], stats["hist_ticker"])
-    logger.info("  Real-time  : klines=%d  depth=%d  ticker=%d  trade=%d",
-                stats["ws_klines"], stats["ws_depth"], stats["ws_ticker"], stats["ws_trade"])
+    logger.info("  Historical : klines=%d  tickers=%d",
+                stats["hist_klines"], stats["hist_ticker"])
+    logger.info("  Real-time  : klines=%d  ticker=%d  trade=%d",
+                stats["ws_klines"], stats["ws_ticker"], stats["ws_trade"])
     logger.info("  Topics written:")
     for tname, count in sorted(final.items()):
         logger.info("    %-45s %d records", tname, count)

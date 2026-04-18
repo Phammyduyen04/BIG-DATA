@@ -31,13 +31,11 @@ class WebSocketCollector:
         self,
         base_url:  str,
         on_kline:  DataCallback,
-        on_depth:  DataCallback,
         on_ticker: DataCallback,
         on_trade:  DataCallback,
     ):
         self.base_url   = base_url
         self._on_kline   = on_kline
-        self._on_depth   = on_depth
         self._on_ticker  = on_ticker
         self._on_trade   = on_trade
         self._running    = False
@@ -51,7 +49,6 @@ class WebSocketCollector:
         for sym in symbols:
             s = sym.lower()
             streams.append(f"{s}@kline_{interval}")
-            streams.append(f"{s}@depth20@1000ms")
             streams.append(f"{s}@ticker")
             streams.append(f"{s}@trade")
         return streams
@@ -72,9 +69,6 @@ class WebSocketCollector:
         try:
             if "@kline_" in stream:
                 await self._handle_kline(data)
-            elif "@depth" in stream:
-                symbol = stream.split("@")[0].upper()
-                await self._handle_depth(data, symbol)
             elif "@ticker" in stream:
                 await self._handle_ticker(data)
             elif "@trade" in stream:
@@ -108,17 +102,6 @@ class WebSocketCollector:
             "is_closed":                bool(k.get("x", False)),
             "source":                   "websocket",
             "timestamp":                self._ts(),
-        })
-
-    async def _handle_depth(self, data: dict, symbol: str) -> None:
-        await self._on_depth({
-            "symbol":         symbol,
-            "event_time":     None,
-            "last_update_id": data.get("lastUpdateId"),
-            "bids":           data.get("bids", []),
-            "asks":           data.get("asks", []),
-            "source":         "websocket",
-            "timestamp":      self._ts(),
         })
 
     async def _handle_ticker(self, data: dict) -> None:
