@@ -5,16 +5,15 @@ Luồng hoạt động:
   1. Khám phá top 100 symbols (USDT) theo 24h volume qua REST.
   2. Song song:
        a. Fetch lịch sử 24h klines cho tất cả 100 symbols (concurrent, rate-limited).
-       b. Fetch order book snapshot cho tất cả 100 symbols.
-       c. Fetch ticker 24h snapshot cho tất cả 100 symbols (1 request duy nhất).
-       d. Mở WebSocket combined stream (tự động tách thành nhiều connection).
-  3. Mỗi REST_REFRESH_INTERVAL giây: refresh lại order book + ticker qua REST.
+       b. Fetch ticker 24h snapshot cho tất cả 100 symbols (1 request duy nhất).
+       c. Mở WebSocket combined stream (tự động tách thành nhiều connection).
+  3. Mỗi REST_REFRESH_INTERVAL giây: refresh lại ticker qua REST.
   4. Chạy 24h rồi tự dừng (hoặc Ctrl+C).
 
 Output (data/):
   <SYMBOL>_klines_1m.jsonl    – nến 1m
-  <SYMBOL>_orderbook.jsonl    – order book top-20
   <SYMBOL>_ticker24h.jsonl    – ticker 24h
+  <SYMBOL>_trades.jsonl       – market trades
 """
 
 import asyncio
@@ -130,8 +129,6 @@ async def run():
         klines = await rest.fetch_klines_batch(symbols, config.KLINE_INTERVAL, config.KLINES_LOOKBACK_LIMIT)
         for k in klines:
             storage.save_kline(k)
-        stats["hist_klines"] += len(klines)
-
         stats["hist_klines"] += len(klines)
 
         logger.info(

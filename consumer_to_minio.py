@@ -6,8 +6,8 @@ and flushes them as JSON Lines files to MinIO.
 
 Topics consumed:
   - binance.kline.1m.raw  → raw/klines/interval=1m/date=.../symbol=.../hour=.../part-XXXXX.json
-  - binance.depth.raw     → raw/depth/date=.../symbol=.../hour=.../part-XXXXX.json
   - binance.ticker.raw    → raw/ticker/date=.../symbol=.../hour=.../part-XXXXX.json
+  - binance.trade.raw     → raw/trades/date=.../symbol=.../hour=.../part-XXXXX.json
 
 Configuration via .env:
   REDPANDA_BROKERS, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY,

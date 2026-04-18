@@ -1,13 +1,12 @@
 """
 WebSocket Collector
 -------------------
-100 symbols × 3 streams = 300 streams.
 Tự động tách thành nhiều connection (mỗi connection tối đa MAX_STREAMS_PER_CONNECTION).
 
 Streams per symbol:
-  <sym>@kline_1m          – nến real-time
-  <sym>@depth20@1000ms    – order book top-20, cập nhật 1s
-  <sym>@ticker            – ticker 24h rolling
+  - @kline_<interval> : nến real-time
+  - @ticker           : 24h ticker snapshot
+  - @trade            : market trades
 """
 
 import asyncio
