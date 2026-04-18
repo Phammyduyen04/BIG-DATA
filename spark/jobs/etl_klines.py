@@ -22,36 +22,37 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
 
     all_dfs = []
 
-    # Adapter: Liệt kê symbols từ S3 klines root
-    # Lưu ý: Trên MinIO, klines có partition interval=1m/, ta sẽ quét sâu hơn một chút
-    # nhưng để giữ logic đơn giản nhất cho team, ta giả định data_base_path hướng tới root
-    for symbol_dir in emulate_listdir(spark, klines_base):
+def run(spark, jdbc_url, jdbc_props, data_base_path):
+    from etl_utils import discover_symbols, load_contract_df
+    sym_map = load_symbol_map(spark, jdbc_url, jdbc_props)
+    klines_base = f"{data_base_path.rstrip('/')}/klines"
+
+    all_dfs = []
+
+    # Adapter: Tìm tất cả symbols có dữ liệu klines (mặc định check interval 1m)
+    symbol_dirs = discover_symbols(spark, klines_base, pattern="interval=1m/date=*/symbol=*")
+    
+    for symbol_dir in symbol_dirs:
         symbol_id = sym_map.get(symbol_dir)
         if symbol_id is None:
             print(f"[klines] Bỏ qua '{symbol_dir}' – không có trong dim_symbols")
             continue
 
-        # Adapter: Tìm tất cả JSON files cho symbol này (recursive)
-        symbol_path = f"{klines_base}/{symbol_dir}"
-        # Trên S3, ta thường đọc cả folder thay vì lặp từng file part-*.json để Spark tự song song hóa
-        # Tuy nhiên, code gốc parse 'interval' từ tên file. 
-        # Để bảo tồn logic này, ta giả lập việc 'tìm thấy 1 file' cho mỗi interval.
-        intervals = ["1m"] # Hiện tại MinIO chủ yếu có 1m
+        # Giữ nguyên contract intervals: Hiện tại tập trung 1m
+        intervals = ["1m"] 
         
         for interval in intervals:
-            # Tạo đường dẫn S3 nạp toàn bộ dữ liệu của symbol + interval này
-            # Cấu trúc thực tế: raw/klines/interval=1m/date=*/symbol=BTCUSDT/*/*.json
-            # Nhưng để khớp với logic cũ, ta dùng glob:
-            s3_glob_path = f"{data_base_path.rstrip('/')}/klines/interval={interval}/date=*/symbol={symbol_dir}/*/*.json"
+            # Glob path chuẩn cho layout partition thực tế
+            s3_glob_path = f"{klines_base}/interval={interval}/date=*/symbol={symbol_dir}/*/*.json"
             
-            # Khôi phục 'fname' ảo để Regex _FNAME_RE hoạt động (BTCUSDT_1m_...)
+            # Khôi phục 'fname' ảo để Regex _FNAME_RE hoạt động (Source of Truth Contract)
             fname = f"{symbol_dir}_{interval}_99999999_99999999.csv"
             m = _FNAME_RE.match(fname)
             if not m: continue
             
             print(f"[klines] Đọc dữ liệu từ S3 cho {symbol_dir} ({interval})")
             
-            # Adapter nạp JSON và khôi phục Contract cột (taker_buy_quote_vol, ...)
+            # Adapter nạp JSON và khôi phục Contract cột
             df = load_contract_df(spark, s3_glob_path, "klines")
             if df.rdd.isEmpty():
                 continue
@@ -59,7 +60,6 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
             df = df.select(
                 F.lit(symbol_id).cast("bigint").alias("symbol_id"),
                 F.lit(interval).alias("interval_code"),
-                # Timestamps có timezone (+00:00) – Spark to_timestamp đọc được
                 F.to_timestamp(F.col("open_time")).alias("open_time"),
                 F.to_timestamp(F.col("close_time")).alias("close_time"),
                 F.col("open").cast("decimal(30,12)").alias("open_price"),
@@ -73,7 +73,7 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
             ).filter(F.col("open_time").isNotNull())
 
             all_dfs.append(df)
-            print(f"[klines] Đọc {fname} ({interval})")
+            print(f"[klines] {symbol_dir} ({interval}) đã nạp")
 
     if not all_dfs:
         print("[klines] Không có file nào, bỏ qua.")

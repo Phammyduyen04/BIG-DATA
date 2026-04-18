@@ -33,58 +33,56 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
     conf = sc._jsc.hadoopConfiguration()
     fs = sc._gateway.jvm.org.apache.hadoop.fs.FileSystem.get(sc._gateway.jvm.java.net.URI(ticker_base), conf)
     
-    # Tìm tất cả JSON files qua glob (Recursive)
-    # raw/ticker/date=2026-04-16/symbol=1000SATSUSDT/hour=07/part-00001.json
+    # Tìm tất cả JSON files qua glob (Recursive layout: date=*/symbol=*/hour=*)
     status_list = fs.globStatus(Path(f"{ticker_base}/date=*/symbol=*/hour=*/part-*.json"))
     
     if not status_list:
         print("[ticker_24h] Không tìm thấy dữ liệu trên S3, bỏ qua.")
         return
 
-    # Để bảo tồn logic lặp từng file của bạn, ta sẽ nhóm theo đường dẫn
+    # Để bảo tồn logic lặp từng file snapshot của bạn nhưng KHÔNG mất dữ liệu:
+    # file_key phải bao gồm cả SYMBOL
     processed_files = set()
     for status in status_list:
         path_str = status.getPath().toString()
         
-        # Parse metadata từ đường dẫn S3 để giả lập filename
-        # Ví dụ: .../date=2026-04-16/.../hour=07/...
-        import re
+        # Parse metadata từ partition path (Source of Truth for Discovery)
         date_m = re.search(r"date=(\d{4})-(\d{2})-(\d{2})", path_str)
+        sym_m  = re.search(r"symbol=([^/]+)", path_str)
         hour_m = re.search(r"hour=(\d{2})", path_str)
         
-        if not date_m or not hour_m: continue
+        if not date_m or not sym_m or not hour_m: continue
         
-        # Tạo virtual filename: ticker_24h_20260416_070000.csv
+        symbol_code = sym_m.group(1)
         v_date = date_m.group(1) + date_m.group(2) + date_m.group(3)
         v_hour = hour_m.group(1) + "0000"
-        fname = f"ticker_24h_{v_date}_{v_hour}.csv"
         
-        # Chỉ xử lý mỗi symbol+date+hour một lần (đọc cả folder JSON)
-        file_key = f"{v_date}_{v_hour}"
+        # KEY FIX: Bao gồm symbol_code để không drop các coin khác trong cùng 1 giờ
+        file_key = f"{symbol_code}_{v_date}_{v_hour}"
         if file_key in processed_files: continue
         processed_files.add(file_key)
 
+        # Tạo virtual filename để khớp Regex cũ (BTCUSDT -> ticker_24h_...)
+        fname = f"ticker_24h_{v_date}_{v_hour}.csv"
         m = _FNAME_RE.match(fname)
         if not m: continue
 
-        # Parse snapshot_time (Logic gốc được giữ nguyên)
+        # Parse snapshot_time (Logic gốc được bảo tồn)
         snapshot_dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
         snapshot_ts = snapshot_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Nạp dữ liệu từ S3 folder (không phải từng file part để tăng tốc)
-        # s3_glob = path_str.rsplit("/", 1)[0] + "/*.json"
-        # Nhưng để chính xác nhất, ta nạp folder chứa file hiện tại
+        # Nạp folder chứa file hiện tại (chứa các part-*.json của symbol đó tại giờ đó)
         s3_folder = path_str.rsplit("/", 1)[0]
         
-        # Khôi phục camelCase: price_change -> priceChange
+        # Khôi phục camelCase: price_change -> priceChange (S3A native)
         df = load_contract_df(spark, s3_folder, "ticker")
-
-        # Chỉ giữ các symbol có trong dim_symbols
-        target_symbols = list(sym_map.keys())
-        df = df.filter(F.col("symbol").isin(target_symbols))
+        
+        # Lọc đúng symbol và symbol hiện có trong dim_symbols
+        if symbol_code not in sym_map: 
+            continue
+        df = df.filter(F.col("symbol") == symbol_code)
 
         if df.rdd.isEmpty():
-            print(f"[ticker_24h] {fname}: không có symbol nào khớp, bỏ qua.")
             continue
 
         # Map symbol_code → symbol_id qua broadcast join

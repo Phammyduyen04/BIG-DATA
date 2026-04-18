@@ -61,21 +61,46 @@ def get_spark_session(app_name=None):
 def emulate_listdir(spark, s3a_path):
     """
     Compatibility Adapter: Giả lập os.listdir bằng Hadoop FileSystem API.
-    Dùng để liệt kê Symbol dirs hoặc files trên S3A.
+    Dùng để liệt kê nội dung trực tiếp của một prefix (không recursive).
     """
     sc = spark.sparkContext
-    # Truy cập Hadoop Path và FileSystem qua JVM
     Path = sc._gateway.jvm.org.apache.hadoop.fs.Path
     FileSystem = sc._gateway.jvm.org.apache.hadoop.fs.FileSystem
     conf = sc._jsc.hadoopConfiguration()
     
-    # Lấy FileSystem cho S3A URI
     uri = sc._gateway.jvm.java.net.URI(s3a_path)
     fs = FileSystem.get(uri, conf)
     
-    # Liệt kê status và trích xuất tên
     statuses = fs.listStatus(Path(s3a_path))
+    if not statuses: return []
     return sorted([status.getPath().getName() for status in statuses])
+
+
+def discover_symbols(spark, base_path, pattern="interval=*/date=*/symbol=*"):
+    """
+    Hadoop S3A Discovery: Tìm các unique symbols từ layout partitioned.
+    Mặc định quét: klines/interval=1m/date=*/symbol=BTCUSDT
+    """
+    import re
+    sc = spark.sparkContext
+    Path = sc._gateway.jvm.org.apache.hadoop.fs.Path
+    conf = sc._jsc.hadoopConfiguration()
+    fs = sc._gateway.jvm.org.apache.hadoop.fs.FileSystem.get(sc._gateway.jvm.java.net.URI(base_path), conf)
+    
+    glob_pattern = f"{base_path.rstrip('/')}/{pattern}"
+    status_list = fs.globStatus(Path(glob_pattern))
+    
+    if not status_list:
+        return []
+    
+    symbols = set()
+    for status in status_list:
+        path_str = status.getPath().toString()
+        match = re.search(r"symbol=([^/]+)", path_str)
+        if match:
+            symbols.add(match.group(1))
+            
+    return sorted(list(symbols))
 
 
 def load_contract_df(spark, s3a_path, module_type):
@@ -88,21 +113,22 @@ def load_contract_df(spark, s3a_path, module_type):
         return df
 
     if module_type == "klines":
-        # Restore contraction: taker_buy_quote_volume -> taker_buy_quote_vol
+        # Restore contract: taker_buy_quote_volume -> taker_buy_quote_vol
+        # quote_volume -> quote_volume (giữ nguyên)
         if "taker_buy_quote_volume" in df.columns:
             df = df.withColumnRenamed("taker_buy_quote_volume", "taker_buy_quote_vol")
             
     elif module_type == "ticker":
-        # Restore camelCase contract for Ticker 24h
+        # Restore camelCase contract cho Ticker 24h logic
         mapping = {
             "price_change": "priceChange",
-            "price_change_pct": "priceChangePercent",
+            "price_change_percent": "priceChangePercent",
             "last_price": "lastPrice",
             "high_price": "highPrice",
             "low_price": "lowPrice",
             "volume": "volume",
             "quote_volume": "quoteVolume",
-            "num_trades": "count"
+            "count": "count" # match legacy count column
         }
         for old_col, new_col in mapping.items():
             if old_col in df.columns:

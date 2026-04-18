@@ -63,8 +63,8 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
             (F.col("is_buyer_maker") == "True").alias("is_buyer_maker"),
         ).filter(F.col("quote_qty").isNotNull())
 
-            all_dfs.append(df)
-            print(f"[trades] Đọc {fname}")
+        all_dfs.append(df)
+        print(f"[trades] {symbol_dir} đã nạp thành công")
 
     if not all_dfs:
         print("[trades] Không có file nào, bỏ qua.")

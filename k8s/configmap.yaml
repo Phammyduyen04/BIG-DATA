@@ -1,19 +1,20 @@
 # ============================================================
-# Kubernetes ConfigMap: Cấu hình chung (AN TOÀN ĐỂ PUSH)
+# Kubernetes ConfigMap: Cấu hình chung (Namespace: spark-etl)
 # ============================================================
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: etl-config
-  namespace: default
+  namespace: spark-etl
 data:
-  # MinIO
-  MINIO_ENDPOINT: "100.74.195.110:30900"
+  # MinIO Internal Cluster DNS
+  MINIO_ENDPOINT: "minio.default.svc.cluster.local:9000"
   MINIO_BUCKET: "binance"
   MINIO_SECURE: "false"
   
-  # PostgreSQL
+  # PostgreSQL Internal DNS (Giả định postgres chạy ở namespace default)
   JDBC_URL: "jdbc:postgresql://postgres.default.svc.cluster.local:5432/crypto_dw"
   
-  # Spark App
-  SPARK_APP_NAME: "CryptoDW-ETL-Production"
+  # Spark Application Config
+  SPARK_APP_NAME: "CryptoDW-K8s-Production"
+  DATA_BASE_PATH: "s3a://binance/raw"

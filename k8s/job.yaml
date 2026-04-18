@@ -1,43 +1,62 @@
 # ============================================================
-# Kubernetes Job: Chạy Spark ETL (One-shot)
+# Kubernetes Job: Spark-Submit Native on K8s Cluster Mode
+# Namespace: spark-etl
 # ============================================================
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: spark-etl-production
-  namespace: default
+  name: spark-etl-submitter
+  namespace: spark-etl
 spec:
   template:
     spec:
       serviceAccountName: spark-job-sa
+      restartPolicy: Never
       containers:
-      - name: spark-etl
+      - name: submitter
         image: huytrongbeou1310/bigdata_spark_postgresql:v1.0.0
-        # spark-submit được set là entrypoint trong Dockerfile
-        # CMD mặc định là launcher.py
+        # Command: Gọi spark-submit trực tiếp với cấu hình Cluster Mode
+        command: ["/opt/spark/bin/spark-submit"]
+        args:
+          - "--master"
+          - "k8s://https://kubernetes.default.svc"
+          - "--deploy-mode"
+          - "cluster"
+          - "--name"
+          - "CryptoDW-Production-Job"
+          - "--conf"
+          - "spark.kubernetes.namespace=spark-etl"
+          - "--conf"
+          - "spark.kubernetes.container.image=huytrongbeou1310/bigdata_spark_postgresql:v1.0.0"
+          - "--conf"
+          - "spark.kubernetes.authenticate.driver.serviceAccountName=spark-job-sa"
+          # Inject Env Vars cho Driver & Executors từ ConfigMap/Secret
+          - "--conf"
+          - "spark.kubernetes.driverEnv.MINIO_ENDPOINT=$(MINIO_ENDPOINT)"
+          - "--conf"
+          - "spark.kubernetes.driverEnv.MINIO_ACCESS_KEY=$(MINIO_ACCESS_KEY)"
+          - "--conf"
+          - "spark.kubernetes.driverEnv.MINIO_SECRET_KEY=$(MINIO_SECRET_KEY)"
+          - "--conf"
+          - "spark.executorEnv.MINIO_ENDPOINT=$(MINIO_ENDPOINT)"
+          - "--conf"
+          - "spark.executorEnv.MINIO_ACCESS_KEY=$(MINIO_ACCESS_KEY)"
+          - "--conf"
+          - "spark.executorEnv.MINIO_SECRET_KEY=$(MINIO_SECRET_KEY)"
+          # Trỏ đến Entrypoint Launcher
+          - "local:///opt/project/spark/jobs/launcher.py"
         env:
-        # Load tất cả từ ConfigMap
+        # Lấy thông tin cơ bản để Submitter có thể truyền sang Driver/Executor
         - name: MINIO_ENDPOINT
           valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_ENDPOINT } }
-        - name: MINIO_BUCKET
-          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_BUCKET } }
-        - name: JDBC_URL
-          valueFrom: { configMapKeyRef: { name: etl-config, key: JDBC_URL } }
-        # Load từ Secret
         - name: MINIO_ACCESS_KEY
           valueFrom: { secretKeyRef: { name: etl-secrets, key: MINIO_ACCESS_KEY } }
         - name: MINIO_SECRET_KEY
           valueFrom: { secretKeyRef: { name: etl-secrets, key: MINIO_SECRET_KEY } }
-        - name: JDBC_USER
-          valueFrom: { secretKeyRef: { name: etl-secrets, key: JDBC_USER } }
-        - name: JDBC_PASSWORD
-          valueFrom: { secretKeyRef: { name: etl-secrets, key: JDBC_PASSWORD } }
         resources:
           requests:
-            memory: "2Gi"
-            cpu: "1"
+            cpu: "250m"
+            memory: "512Mi"
           limits:
-            memory: "4Gi"
-            cpu: "2"
-      restartPolicy: OnFailure
-  backoffLimit: 3
+            cpu: "500m"
+            memory: "1Gi"

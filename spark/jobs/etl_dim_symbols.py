@@ -20,16 +20,19 @@ def _parse_assets(symbol_code: str):
 
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
-    # Adapter: Sử dụng S3A path và emulate_listdir để tìm symbols
-    from etl_utils import emulate_listdir
+    # Adapter: Sử dụng Hadoop Discovery để tìm symbols từ layout partitioned
+    from etl_utils import discover_symbols
     klines_base = f"{data_base_path.rstrip('/')}/klines"
     
-    print(f"[dim_symbols] Discovering symbols from S3: {klines_base}")
+    print(f"[dim_symbols] Discovering symbols from partitioned S3 layout: {klines_base}")
+    
+    # Discovery pattern: klines/interval=*/date=*/symbol=...
+    # Mặc định lấy từ interval đầu tiên tìm thấy để lấy danh sách symbol codes
+    symbol_codes = discover_symbols(spark, klines_base, pattern="interval=*/date=*/symbol=*")
     
     symbols = []
-    # emulate_listdir trả về sorted list các subdirectories (symbol codes)
-    for name in emulate_listdir(spark, klines_base):
-        # Logic parse asset được giữ nguyên bản
+    for name in symbol_codes:
+        # Logic parse asset được giữ nguyên bản (Source of Truth)
         base, quote = _parse_assets(name)
         symbols.append((name, base, quote))
 
