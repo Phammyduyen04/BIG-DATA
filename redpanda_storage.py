@@ -3,8 +3,8 @@ Redpanda Storage — Thay thế DataStorage để đẩy dữ liệu vào Redpan
 ----------------------------------------------------------------------------------------
 Các topic tương ứng:
   binance.kline.1m.raw
-  binance.depth.raw
   binance.ticker.raw
+  binance.trade.raw
 """
 
 import json

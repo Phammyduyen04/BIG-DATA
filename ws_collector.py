@@ -166,7 +166,7 @@ class WebSocketCollector:
                     ping_interval=20,
                     ping_timeout=30,
                     close_timeout=10,
-                    max_size=10 * 1024 * 1024,   # 10 MB (depth data có thể lớn)
+                    max_size=10 * 1024 * 1024,   # 10 MB limit for incoming messages
                 ) as ws:
                     logger.info("%s Connected (attempt %d)", tag, reconnect_count + 1)
                     reconnect_count = 0
@@ -210,8 +210,8 @@ class WebSocketCollector:
         max_reconnects: int = 20,
     ) -> None:
         """
-        Tự động tách symbols thành nhiều WS connection nếu cần.
-        100 symbols × 3 streams = 300 → tách thành 2 connection × 150.
+        Tách symbols thành nhiều WS connection dựa trên MAX_STREAMS_PER_CONNECTION.
+        (Mỗi symbol hiện có 3 streams: kline, ticker, trade).
         """
         self._running = True
 
