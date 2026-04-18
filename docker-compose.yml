@@ -1,146 +1,33 @@
 # ============================================================
-# Test stack: CSV -> Spark -> PostgreSQL
-# Dùng image chính thức apache/spark thay vì bitnami/spark
-#
-# Khởi động:  docker compose up -d postgres spark-master spark-worker
-# Chạy ETL:   docker compose run --rm spark-etl
+# Minimal Local Ingestion Infrastructure (Lean Version)
 # ============================================================
 
 services:
-
-  # ── PostgreSQL DW ─────────────────────────────────────────
-  postgres:
-    image: postgres:16-alpine
-    container_name: dw_postgres
-    environment:
-      POSTGRES_DB:       crypto_dw
-      POSTGRES_USER:     dwuser
-      POSTGRES_PASSWORD: dwpassword
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 1G
+      - --overprovisioned
+      - --node-id 0
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
     ports:
-      - "5432:5432"
+      - "19092:19092"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dwuser -d crypto_dw"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      - redpanda_data:/var/lib/redpanda/data
 
-  # ── Spark Master ──────────────────────────────────────────
-  spark-master:
-    image: apache/spark:3.5.4
-    container_name: spark_master
-    user: root
-    command:
-      - /opt/spark/bin/spark-class
-      - org.apache.spark.deploy.master.Master
-      - --host
-      - spark-master
-      - --port
-      - "7077"
-      - --webui-port
-      - "8080"
-    environment:
-      SPARK_NO_DAEMONIZE: "true"
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    container_name: redpanda-console
     ports:
-      - "8080:8080"   # Spark Web UI
-      - "7077:7077"
-
-  # ── Spark Worker ──────────────────────────────────────────
-  spark-worker:
-    image: apache/spark:3.5.4
-    container_name: spark_worker
-    user: root
+      - "8080:8080"
     depends_on:
-      - spark-master
-    command:
-      - /opt/spark/bin/spark-class
-      - org.apache.spark.deploy.worker.Worker
-      - --cores
-      - "2"
-      - --memory
-      - 2G
-      - spark://spark-master:7077
+      - redpanda
     environment:
-      SPARK_NO_DAEMONIZE: "true"
-    volumes:
-      - ./test_data:/opt/test_data:ro
-
-  # ── Spark ETL (one-shot, chạy xong thì tắt) ───────────────
-  spark-etl:
-    image: apache/spark:3.5.4
-    container_name: spark_etl
-    user: root
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      JDBC_URL:        jdbc:postgresql://postgres:5432/crypto_dw
-      JDBC_USER:       dwuser
-      JDBC_PASSWORD:   dwpassword
-      DATA_BASE_PATH:  /opt/test_data
-    volumes:
-      - ./spark/jobs:/opt/spark-jobs
-      - ./test_data:/opt/test_data:ro
-      # Cache ivy/Maven để không tải lại JDBC jar mỗi lần
-      - ivy_cache:/root/.ivy2
-    command:
-      - /opt/spark/bin/spark-submit
-      - --master
-      - local[*]
-      - --driver-memory
-      - 3g
-      - --packages
-      - org.postgresql:postgresql:42.7.3
-      - --conf
-      - spark.sql.session.timeZone=UTC
-      - --conf
-      - spark.sql.shuffle.partitions=4
-      - --conf
-      - spark.driver.extraJavaOptions=-Divy.home=/root/.ivy2
-      - --py-files
-      - /opt/spark-jobs/etl_utils.py,/opt/spark-jobs/etl_dim_symbols.py,/opt/spark-jobs/etl_klines.py,/opt/spark-jobs/etl_klines_resample.py,/opt/spark-jobs/etl_trades.py,/opt/spark-jobs/etl_ticker_24h.py,/opt/spark-jobs/analysis_top_coins.py
-      - /opt/spark-jobs/run_all.py
-    restart: "no"
-
-  # ── Spark Streaming (chạy liên tục, chỉ bật khi có Redpanda) ─
-  spark-streaming:
-    image: apache/spark:3.5.4
-    container_name: spark_streaming
-    user: root
-    profiles: ["streaming"]          # chỉ khởi động khi chỉ định: --profile streaming
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      KAFKA_BROKERS:   redpanda:9092
-      KAFKA_TOPIC_1M:  klines_1m
-      CHECKPOINT_DIR:  /tmp/checkpoints/klines
-      JDBC_URL:        jdbc:postgresql://postgres:5432/crypto_dw
-      JDBC_USER:       dwuser
-      JDBC_PASSWORD:   dwpassword
-    volumes:
-      - ./spark/jobs:/opt/spark-jobs
-      - checkpoint_data:/tmp/checkpoints
-      - ivy_cache:/root/.ivy2
-    command:
-      - /opt/spark/bin/spark-submit
-      - --master
-      - local[*]
-      - --packages
-      # kafka connector + postgresql JDBC
-      - org.postgresql:postgresql:42.7.3,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4
-      - --conf
-      - spark.sql.session.timeZone=UTC
-      - --conf
-      - spark.sql.shuffle.partitions=4
-      - --py-files
-      - /opt/spark-jobs/etl_utils.py
-      - /opt/spark-jobs/streaming_klines.py
-    restart: unless-stopped      # tự restart nếu crash
+      KAFKA_BROKERS: "redpanda:9092"
 
 volumes:
-  postgres_data:
-  ivy_cache:
-  checkpoint_data:
+  redpanda_data:

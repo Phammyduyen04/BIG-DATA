@@ -1,3 +1,7 @@
+# ============================================================
+# [TEMPORARY DUPLICATION] SPARK processing CONFIG
+# WARNING: Keep in sync with root config.py until shared config logic is implemented.
+# ============================================================
 import os
 from pathlib import Path
 from dotenv import load_dotenv

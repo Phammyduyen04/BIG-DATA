@@ -1,8 +1,7 @@
 # ============================================================
-# [LEGACY] DO NOT USE THIS ROOT DOCKERFILE
-# Use spark_processing/Dockerfile for builds.
+# Dockerfile: Spark ETL Production Image (ISOLATED)
 # ============================================================
-# Dockerfile: Spark ETL Production Image (Optimized & Clean)
+# Context: spark_processing/
 # ============================================================
 FROM apache/spark:3.5.4
 
@@ -18,13 +17,12 @@ RUN pip install --no-cache-dir python-dotenv boto3
 WORKDIR /opt/project
 
 # Tải các thư viện JAR cần thiết (Maven Central)
-# Điều này giúp repo Git nhẹ nhàng và Docker image deterministic hơn
 RUN wget https://jdbc.postgresql.org/download/postgresql-42.7.3.jar -P /opt/spark/jars/ && \
     wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar -P /opt/spark/jars/ && \
     wget https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar -P /opt/spark/jars/
 
-# Copy mã nguồn
-COPY spark/jobs /opt/project/spark/jobs/
+# Copy mã nguồn (Local paths relative to spark_processing/)
+COPY jobs /opt/project/spark/jobs/
 COPY config.py /opt/project/config.py
 
 ENV PYTHONPATH="${PYTHONPATH}:/opt/project"

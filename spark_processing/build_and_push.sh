@@ -1,15 +1,14 @@
 #!/bin/bash
 # ============================================================
-# [LEGACY] DO NOT USE THIS ROOT SCRIPT
-# Use spark_processing/build_and_push.sh instead.
-# ============================================================
-# Script: Build và Push Docker Image ETL
+# Script: Build và Push Docker Image ETL (ISOLATED)
+# Must be run from within spark_processing/
 # ============================================================
 
 IMAGE_NAME="huytrongbeou1310/bigdata_spark_postgresql"
 VERSION="v1.0.0"
 
-echo ">>> Building Docker image: $IMAGE_NAME:$VERSION..."
+echo ">>> [ISOLATED BUILD] Building Docker image: $IMAGE_NAME:$VERSION..."
+# Context is the current folder (spark_processing/)
 docker build -t $IMAGE_NAME:$VERSION .
 
 if [ $? -eq 0 ]; then
@@ -18,7 +17,7 @@ if [ $? -eq 0 ]; then
     docker push $IMAGE_NAME:$VERSION
     if [ $? -eq 0 ]; then
         echo ">>> Push SUCCESS."
-        echo ">>> Next step: kubectl apply -f k8s/"
+        echo ">>> Next step on VM: kubectl apply -f k8s/"
     else
         echo ">>> ERROR: Push failed. Are you logged in to Docker Hub?"
     fi
