@@ -39,8 +39,11 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
 
     all_dfs = []
 
-    # Adapter: Liệt kê symbols từ S3 trades root
-    for symbol_dir in emulate_listdir(spark, trades_base):
+    # Discovery: Tìm tất cả symbols có dữ liệu trades (layout partitioned theo date)
+    from etl_utils import discover_symbols
+    symbol_dirs = discover_symbols(spark, trades_base, pattern="date=*/symbol=*")
+    
+    for symbol_dir in symbol_dirs:
         symbol_id = sym_map.get(symbol_dir)
         if symbol_id is None:
             print(f"[trades] Bỏ qua '{symbol_dir}' – không có trong dim_symbols")

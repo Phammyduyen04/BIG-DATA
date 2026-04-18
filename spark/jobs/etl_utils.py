@@ -128,7 +128,7 @@ def load_contract_df(spark, s3a_path, module_type):
             "low_price": "lowPrice",
             "volume": "volume",
             "quote_volume": "quoteVolume",
-            "count": "count" # match legacy count column
+            "num_trades": "count" # match legacy count column
         }
         for old_col, new_col in mapping.items():
             if old_col in df.columns:

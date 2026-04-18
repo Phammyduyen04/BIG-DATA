@@ -15,12 +15,7 @@ from etl_utils import execute_sql, load_symbol_map
 _FNAME_RE = re.compile(r"^[A-Z]+_([^_]+)_\d{8}_\d{8}\.csv$")
 
 
-def run(spark, jdbc_url, jdbc_props, data_base_path):
-    from etl_utils import emulate_listdir, load_contract_df
-    sym_map = load_symbol_map(spark, jdbc_url, jdbc_props)
-    klines_base = f"{data_base_path.rstrip('/')}/klines"
 
-    all_dfs = []
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
     from etl_utils import discover_symbols, load_contract_df
