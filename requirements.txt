@@ -1,9 +1,0 @@
-aiohttp==3.9.3
-websockets==12.0
-python-dotenv==1.0.1
-pandas==2.2.1
-kafka-python-ng>=2.2.0
-boto3
-python-binance
-requests
-tqdm
