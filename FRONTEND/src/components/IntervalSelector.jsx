@@ -1,7 +1,6 @@
 const INTERVALS = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
-const RANGES = ['10d', '1mo', '3mo'];
 
-export default function IntervalSelector({ selected, onChange, activeRange, onRangeChange }) {
+export default function IntervalSelector({ selected, onChange }) {
   return (
     <div className="flex items-center gap-3 px-4 py-2 bg-[#161a1e] border-t border-[#2b3139]">
       <div className="flex gap-1">
@@ -16,22 +15,6 @@ export default function IntervalSelector({ selected, onChange, activeRange, onRa
               }`}
           >
             {iv}
-          </button>
-        ))}
-      </div>
-
-      <div className="flex gap-1">
-        {RANGES.map(r => (
-          <button
-            key={r}
-            onClick={() => onRangeChange(r)}
-            className={`px-3 py-1 text-xs rounded font-medium transition-colors
-              ${activeRange === r
-                ? 'bg-[#2b3139] text-white'
-                : 'text-gray-500 hover:text-white hover:bg-[#2b3139]'
-              }`}
-          >
-            {r}
           </button>
         ))}
       </div>

@@ -227,8 +227,6 @@ export default function App() {
             <IntervalSelector
               selected={selectedInterval}
               onChange={handleIntervalChange}
-              activeRange={activeRange}
-              onRangeChange={handleRangeChange}
             />
           </div>
 
@@ -238,7 +236,7 @@ export default function App() {
               <TradesList trades={trades} />
             </div>
             <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-              <CoinFilter symbols={symbols} trades={trades} onSymbolChange={setSelectedSymbol} />
+              <CoinFilter symbols={symbols} onSymbolChange={setSelectedSymbol} />
             </div>
           </div>
         </div>

@@ -1,14 +1,41 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { getTicker24h } from '../api/marketApi';
 
-export default function CoinFilter({ symbols, trades, onSymbolChange }) {
+export default function CoinFilter({ symbols, onSymbolChange }) {
   const [search, setSearch] = useState('');
+  const [prices, setPrices] = useState({});
+
+  useEffect(() => {
+    if (!symbols.length) return;
+
+    const fetchPrices = async () => {
+      const results = await Promise.allSettled(
+        symbols.map(s => getTicker24h(s.symbol_code).then(t => ({ symbol: s.symbol_code, price: t?.last_price ?? null })))
+      );
+      const map = {};
+      results.forEach(r => {
+        if (r.status === 'fulfilled' && r.value) {
+          map[r.value.symbol] = r.value.price;
+        }
+      });
+      setPrices(map);
+    };
+
+    fetchPrices();
+    const id = setInterval(fetchPrices, 10000);
+    return () => clearInterval(id);
+  }, [symbols]);
 
   const filtered = symbols.filter(s =>
     s.symbol_code.toLowerCase().includes(search.toLowerCase())
   );
 
-  // Tính giá gần nhất từ trades (nếu có)
-  const latestPrice = trades.length > 0 ? parseFloat(trades[0].price) : null;
+  const fmt = (price) => {
+    if (price == null) return '—';
+    const n = parseFloat(price);
+    if (isNaN(n)) return '—';
+    return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -40,9 +67,7 @@ export default function CoinFilter({ symbols, trades, onSymbolChange }) {
             className="grid grid-cols-3 px-3 py-[5px] text-xs hover:bg-[#1e2329] cursor-pointer transition-colors"
           >
             <span className="text-white font-medium">{s.symbol_code}</span>
-            <span className="text-right text-gray-300">
-              {latestPrice ? latestPrice.toLocaleString() : '—'}
-            </span>
+            <span className="text-right text-gray-300">{fmt(prices[s.symbol_code])}</span>
             <span className="text-right text-gray-500">{s.base_asset}</span>
           </div>
         ))}

@@ -30,13 +30,13 @@ const DETAIL_FIELDS = [
 ];
 
 export default function TopCoinsChart() {
-  const [coins, setCoins]                   = useState([]);
-  const [selected, setSelected]             = useState(null);
-  const [detail, setDetail]                 = useState(null);
-  const [loading, setLoading]               = useState(true);
-  const [detailLoading, setDetailLoading]   = useState(false);
-  const [error, setError]                   = useState(null);
-  const containerRef                        = useRef(null);
+  const [coins, setCoins]                 = useState([]);
+  const [selected, setSelected]           = useState(null);
+  const [detail, setDetail]               = useState(null);
+  const [loading, setLoading]             = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [error, setError]                 = useState(null);
+  const containerRef                      = useRef(null);
 
   useEffect(() => {
     setLoading(true);
@@ -61,7 +61,11 @@ export default function TopCoinsChart() {
   }, [selected]);
 
   const handleBarClick = useCallback(async (symbolCode) => {
-    if (selected === symbolCode) { setSelected(null); setDetail(null); return; }
+    if (selected === symbolCode) {
+      setSelected(null);
+      setDetail(null);
+      return;
+    }
     setSelected(symbolCode);
     setDetailLoading(true);
     try {
@@ -74,12 +78,17 @@ export default function TopCoinsChart() {
     }
   }, [selected]);
 
-  // --- Derived data (safe after all hooks) ---
+  // --- Derived data ---
   const detailVisible = !!selected;
 
   const categories = coins.map(c => c.symbol_code.replace('USDT', ''));
   const scores     = coins.map(c => +(Number(c.long_term_score) * 100).toFixed(2));
-  const colors     = coins.map(c => SIGNAL_COLOR[c.signal] ?? '#848e9c');
+  // Khi có cột được chọn: cột được chọn giữ màu, cột còn lại mờ đi
+  const colors = coins.map(c => {
+    const base = SIGNAL_COLOR[c.signal] ?? '#848e9c';
+    if (!selected) return base;
+    return c.symbol_code === selected ? base : base + '55';
+  });
 
   const options = {
     chart: {
@@ -142,8 +151,9 @@ export default function TopCoinsChart() {
           </div>`;
       },
     },
+    // Tắt hoàn toàn filter active của ApexCharts — màu cột được kiểm soát bằng colors array
     states: {
-      active: { filter: { type: 'darken', value: 0.75 } },
+      active: { filter: { type: 'none' } },
     },
   };
 
