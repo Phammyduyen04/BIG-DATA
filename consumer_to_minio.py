@@ -142,7 +142,7 @@ class BufferManager:
         msg = self._restore_contract(topic, message)
 
         symbol   = msg.get("symbol", "UNKNOWN")
-        event_ts = msg.get("event_time") or int(time.time() * 1000)
+        event_ts = msg.get("time") or msg.get("event_time") or int(time.time() * 1000)
 
         # Derive date and hour from event time
         dt = datetime.fromtimestamp(event_ts / 1000, tz=timezone.utc)
@@ -262,7 +262,11 @@ class BufferManager:
             if "taker_buy_quote_volume" in m:
                 m["taker_buy_quote_vol"] = m.pop("taker_buy_quote_volume")
         
-        # Trades already have quote_qty and is_buyer_maker from ws_collector
+        elif topic == "binance.trade.raw":
+            # Map event_time -> time as expected by etl_trades.py
+            if "event_time" in m and "time" not in m:
+                m["time"] = m.pop("event_time")
+        
         return m
 # ───────────────────────────────────────────────────────────────
 

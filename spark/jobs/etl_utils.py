@@ -138,7 +138,6 @@ def load_contract_df(spark, s3a_path, module_type):
         # Restore trade semantics expected by etl_trades.py
         mapping = {
             "quote_volume": "quote_qty",
-            "event_time": "time"
         }
         for old_col, new_col in mapping.items():
             if old_col in df.columns:

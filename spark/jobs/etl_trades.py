@@ -50,8 +50,8 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
             continue
 
         # Adapter: Nạp toàn bộ JSON trades cho symbol này (recursive glob)
-        # raw/trades/date=*/symbol=BTCUSDT/*.json
-        s3_glob_path = f"{data_base_path.rstrip('/')}/trades/date=*/symbol={symbol_dir}/*.json"
+        # raw/trades/date=*/symbol=BTCUSDT/hour=*/*.json
+        s3_glob_path = f"{data_base_path.rstrip('/')}/trades/date=*/symbol={symbol_dir}/hour=*/*.json"
         
         print(f"[trades] Đọc dữ liệu từ S3 cho {symbol_dir}")
         
@@ -63,7 +63,7 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
         df = df.select(
             F.lit(symbol_id).cast("bigint").alias("symbol_id"),
             F.col("quote_qty").cast("decimal(30,12)"),
-            (F.col("is_buyer_maker") == "True").alias("is_buyer_maker"),
+            F.col("is_buyer_maker").cast("boolean").alias("is_buyer_maker"),
         ).filter(F.col("quote_qty").isNotNull())
 
         all_dfs.append(df)
