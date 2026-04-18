@@ -33,12 +33,14 @@ class WebSocketCollector:
         on_kline:  DataCallback,
         on_depth:  DataCallback,
         on_ticker: DataCallback,
+        on_trade:  DataCallback,
     ):
-        self.base_url  = base_url
-        self._on_kline  = on_kline
-        self._on_depth  = on_depth
-        self._on_ticker = on_ticker
-        self._running   = False
+        self.base_url   = base_url
+        self._on_kline   = on_kline
+        self._on_depth   = on_depth
+        self._on_ticker  = on_ticker
+        self._on_trade   = on_trade
+        self._running    = False
 
     # ── stream URL helpers ────────────────────────────────────────────────────
 
@@ -51,6 +53,7 @@ class WebSocketCollector:
             streams.append(f"{s}@kline_{interval}")
             streams.append(f"{s}@depth20@1000ms")
             streams.append(f"{s}@ticker")
+            streams.append(f"{s}@trade")
         return streams
 
     def _chunk_url(self, streams: list[str]) -> str:
@@ -74,6 +77,8 @@ class WebSocketCollector:
                 await self._handle_depth(data, symbol)
             elif "@ticker" in stream:
                 await self._handle_ticker(data)
+            elif "@trade" in stream:
+                await self._handle_trade(data)
         except Exception as e:
             logger.error("Dispatch error stream='%s': %s", stream, e)
 
@@ -138,6 +143,22 @@ class WebSocketCollector:
             "num_trades":         int(data.get("n", 0)),
             "source":             "websocket",
             "timestamp":          self._ts(),
+        })
+
+    async def _handle_trade(self, data: dict) -> None:
+        p = float(data.get("p", 0))
+        q = float(data.get("q", 0))
+        await self._on_trade({
+            "symbol":         data.get("s"),
+            "event_time":     data.get("E"),
+            "trade_id":       data.get("t"),
+            "price":          p,
+            "qty":            q,
+            "quote_qty":      p * q,
+            "time":           data.get("T"),
+            "is_buyer_maker": data.get("m"),
+            "source":         "websocket",
+            "timestamp":      self._ts(),
         })
 
     # ── single connection loop ────────────────────────────────────────────────

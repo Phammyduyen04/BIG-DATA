@@ -90,7 +90,6 @@ async def run():
                 "[WS] depth=%d | %s bid=%s ask=%s",
                 stats["ws_depth"], r["symbol"], bid, ask,
             )
-
     async def on_ticker(r: dict):
         stats["ws_ticker"] += 1
         storage.save_ticker(r)
@@ -100,11 +99,21 @@ async def run():
                 stats["ws_ticker"], r["symbol"], r["last_price"], r["price_change_pct"],
             )
 
+    async def on_trade(r: dict):
+        stats["ws_trade"] += 1
+        storage.save_trade(r)
+        if stats["ws_trade"] % 2000 == 0:
+            logger.info(
+                "[WS] trade=%d | %s price=%.4f qty=%.4f",
+                stats["ws_trade"], r["symbol"], r["price"], r["qty"],
+            )
+
     ws = WebSocketCollector(
         base_url  = config.WS_BASE_URL,
         on_kline  = on_kline,
         on_depth  = on_depth,
         on_ticker = on_ticker,
+        on_trade  = on_trade,
     )
 
     # ── banner ───────────────────────────────────────────────────────────────
@@ -218,8 +227,8 @@ async def run():
     logger.info("  FINAL SUMMARY")
     logger.info("  Historical : klines=%d  books=%d  tickers=%d",
                 stats["hist_klines"], stats["hist_depth"], stats["hist_ticker"])
-    logger.info("  Real-time  : klines=%d  depth=%d  ticker=%d",
-                stats["ws_klines"], stats["ws_depth"], stats["ws_ticker"])
+    logger.info("  Real-time  : klines=%d  depth=%d  ticker=%d  trade=%d",
+                stats["ws_klines"], stats["ws_depth"], stats["ws_ticker"], stats["ws_trade"])
     logger.info("  Topics written:")
     for tname, count in sorted(final.items()):
         logger.info("    %-45s %d records", tname, count)

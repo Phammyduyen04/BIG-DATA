@@ -55,6 +55,7 @@ TOPICS = [
     "binance.kline.1m.raw",
     "binance.depth.raw",
     "binance.ticker.raw",
+    "binance.trade.raw",
 ]
 
 # Topic → MinIO prefix mapping
@@ -62,6 +63,7 @@ TOPIC_PREFIX_MAP = {
     "binance.kline.1m.raw": "raw/klines/interval=1m",
     "binance.depth.raw":    "raw/depth",
     "binance.ticker.raw":   "raw/ticker",
+    "binance.trade.raw":    "raw/trades",
 }
 
 LOG_FILE = "logs/consumer_minio.log"
@@ -139,7 +141,10 @@ class BufferManager:
 
     def add(self, topic: str, message: dict):
         """Add a message to the appropriate buffer."""
-        symbol   = message.get("symbol", "UNKNOWN")
+        # WRITER BOUNDARY: Ensure Storage Contract matches downstream Spark ETL expectations
+        msg = self._restore_contract(topic, message)
+
+        symbol   = msg.get("symbol", "UNKNOWN")
         event_ts = message.get("event_time") or int(time.time() * 1000)
 
         # Derive date and hour from event time
@@ -225,6 +230,43 @@ class BufferManager:
             f"pending={pending:,}  "
             f"files={self.total_files:,}"
         )
+
+    def _restore_contract(self, topic: str, msg: dict) -> dict:
+        """
+        Storage Contract Guard: Translates internal collector fields (snake_case)
+        back to the original Binance/Downstream Spark ETL expectations (camelCase/Specific names).
+        """
+        m = msg.copy()
+        
+        if topic == "binance.ticker.raw":
+            # Map snake_case -> camelCase expected by fact_ticker_24h_snapshots ETL
+            mapping = {
+                "price_change":       "priceChange",
+                "price_change_pct":   "priceChangePercent",
+                "weighted_avg_price": "weightedAvgPrice",
+                "prev_close_price":   "prevClosePrice",
+                "last_price":         "lastPrice",
+                "last_qty":           "lastQty",
+                "bid_price":          "bidPrice",
+                "ask_price":          "askPrice",
+                "open_price":         "openPrice",
+                "high_price":         "highPrice",
+                "low_price":          "lowPrice",
+                "volume":             "volume",
+                "quote_volume":       "quoteVolume",
+                "num_trades":         "count", # Critical: match etl_ticker_24h.py
+            }
+            for old, new in mapping.items():
+                if old in m:
+                    m[new] = m.pop(old)
+                    
+        elif topic == "binance.kline.1m.raw":
+            # Map specific kline fields
+            if "taker_buy_quote_volume" in m:
+                m["taker_buy_quote_vol"] = m.pop("taker_buy_quote_volume")
+        
+        # Trades already have quote_qty and is_buyer_maker from ws_collector
+        return m
 # ───────────────────────────────────────────────────────────────
 
 
