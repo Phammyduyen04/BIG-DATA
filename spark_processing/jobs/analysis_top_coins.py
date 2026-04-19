@@ -60,6 +60,20 @@ def run(spark, jdbc_url, jdbc_props):
         print("[top_coins] Không có dữ liệu 1d klines, bỏ qua.")
         return
 
+    # ── Audit & Sanity Filter (Self-Healing from pre-existing corruption) ──
+    print(f"\n[top_coins] Kiểm tra tính hợp lệ của dữ liệu đầu vào...")
+    klines_1d.printSchema()
+    
+    raw_count = klines_1d.cache().count()
+    # Loại bỏ các dòng có năm bất thường (VD: 58258, 58259)
+    klines_1d = klines_1d.filter(F.year(F.col("open_time")) < 3000)
+    clean_count = klines_1d.count()
+    
+    if raw_count != clean_count:
+        print(f"[top_coins] WARNING: Đã lọc bỏ {raw_count - clean_count} dòng bị hỏng (Timestamp overflow).")
+    else:
+        print(f"[top_coins] Dữ liệu timestamp sạch ({clean_count} rows).")
+
     # ── Volume trend: so sánh nửa sau vs nửa đầu ─────────────
     # Chia các nến theo thứ tự thời gian thành 2 nửa per symbol,
     # tính avg volume mỗi nửa rồi lấy tỷ lệ second/first.

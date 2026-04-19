@@ -76,6 +76,9 @@ def run(spark, jdbc_url, jdbc_props, df_1m=None, symbol_codes: list = None):
         query = "(SELECT * FROM fact_klines WHERE interval_code = '1m') AS src"
         df_1m = spark.read.jdbc(jdbc_url, query, properties=jdbc_props)
 
+        # Safety Filter: Loại bỏ rác timestamp cũ trước khi Resample
+        df_1m = df_1m.filter(F.year(F.col("open_time")) < 3000)
+
         if symbol_codes:
             sym_df = spark.read.jdbc(jdbc_url, "dim_symbols", properties=jdbc_props)
             ids = [
