@@ -14,7 +14,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: submitter
-        image: huytrongbeou1310/bigdata_spark_postgresql:v1.1.9
+        image: huytrongbeou1310/bigdata_spark_postgresql:v1.1.10
         imagePullPolicy: Always
         # Command: Gọi spark-submit trực tiếp với cấu hình Cluster Mode
         command: ["/opt/spark/bin/spark-submit"]
@@ -28,7 +28,7 @@ spec:
           - "--conf"
           - "spark.kubernetes.namespace=spark-etl"
           - "--conf"
-          - "spark.kubernetes.container.image=huytrongbeou1310/bigdata_spark_postgresql:v1.1.9"
+          - "spark.kubernetes.container.image=huytrongbeou1310/bigdata_spark_postgresql:v1.1.10"
           - "--conf"
           - "spark.kubernetes.container.imagePullPolicy=Always"
           - "--conf"

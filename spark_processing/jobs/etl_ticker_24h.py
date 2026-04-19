@@ -1,11 +1,4 @@
-"""
-ETL: fact_ticker_24h_snapshots
-Nguồn: ticker_24h/ticker_24h_{YYYYMMDD}_{HHMMSS}.csv
-Cột CSV: symbol, priceChange, priceChangePercent, lastPrice,
-         highPrice, lowPrice, volume, quoteVolume, count, ...
-
-snapshot_time lấy từ tên file (không có trong dữ liệu).
-Chỉ load các symbol có trong import time
+import time
 from datetime import datetime
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, LongType
@@ -114,7 +107,5 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
     execute_sql(spark, jdbc_url, jdbc_props, "DROP TABLE IF EXISTS staging_fact_ticker_24h")
 
     duration = time.time() - start_time
-    print(f"[ticker_24h] Hoàn tất nạp {after_count} rows trong {duration:.2f}s")
-k, jdbc_url, jdbc_props, "DROP TABLE IF EXISTS staging_fact_ticker_24h")
-
-    print(f"[ticker_24h] Đã load {row_count} rows vào fact_ticker_24h_snapshots")
+    print(f"[ticker_24h] Hoàn tất nạp {final_count} rows trong {duration:.2f}s")
+    print(f"[ticker_24h] Đã load xong fact_ticker_24h_snapshots")
