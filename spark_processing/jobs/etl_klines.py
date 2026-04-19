@@ -64,7 +64,7 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
                 F.col("volume").cast("decimal(30,12)").alias("volume_base"),
                 F.col("quote_volume").cast("decimal(30,12)").alias("volume_quote"),
                 F.col("num_trades").cast("bigint"),
-                F.col("taker_buy_quote_volume").cast("decimal(30,12)").alias("taker_buy_quote_volume"),
+                F.col("taker_buy_quote_vol").cast("decimal(30,12)").alias("taker_buy_quote_volume"),
             ).filter(F.col("open_time").isNotNull())
 
             # Safety Audit: Print schema and time range to verify year is around 2024-2026
