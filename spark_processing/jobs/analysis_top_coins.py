@@ -39,10 +39,25 @@ TOP_N     = 10
 def run(spark, jdbc_url, jdbc_props):
     read_props = {**jdbc_props, "fetchsize": "10000"}
 
-    # ── Đọc dữ liệu từ Postgres ───────────────────────────────
+    # ── Đọc dữ liệu từ Postgres (Chỉ lấy các cột cần thiết để tránh dữ liệu bẩn) ──
     klines_1d = spark.read.jdbc(
         jdbc_url,
-        "(SELECT * FROM fact_klines WHERE interval_code = '1d') AS t",
+        """
+        (
+          SELECT 
+            symbol_id, 
+            open_time, 
+            open_price, 
+            close_price, 
+            high_price, 
+            low_price,
+            volume_quote, 
+            num_trades, 
+            taker_buy_quote_volume 
+          FROM fact_klines 
+          WHERE interval_code = '1d'
+        ) AS t
+        """,
         properties=read_props,
     )
 
@@ -56,21 +71,22 @@ def run(spark, jdbc_url, jdbc_props):
         .select("symbol_id", "symbol_code")
     )
 
-    if klines_1d.rdd.isEmpty():
+    # Kiểm tra rỗng an toàn (Tránh materialize sang Python RDD Layer sớm)
+    if klines_1d.limit(1).count() == 0:
         print("[top_coins] Không có dữ liệu 1d klines, bỏ qua.")
         return
 
-    # ── Audit & Sanity Filter (Self-Healing from pre-existing corruption) ──
+    # ── Audit & Sanity Filter (Self-Healing - Chạy TRƯỚC mọi bước Window/Sort) ──
     print(f"\n[top_coins] Kiểm tra tính hợp lệ của dữ liệu đầu vào...")
-    klines_1d.printSchema()
     
     raw_df = klines_1d.cache()
     raw_count = raw_df.count()
     
-    # Bộ lọc chặt chẽ: 2000 - 2100
+    # Bộ lọc cực kỳ chặt chẽ sử dụng hằng số to_timestamp
     klines_1d = raw_df.filter(
         F.col("open_time").isNotNull() & 
-        F.year(F.col("open_time")).between(2000, 2100)
+        (F.col("open_time") >= F.to_timestamp(F.lit("2000-01-01 00:00:00"))) &
+        (F.col("open_time") <  F.to_timestamp(F.lit("2100-01-01 00:00:00")))
     )
     clean_count = klines_1d.count()
     
@@ -84,7 +100,7 @@ def run(spark, jdbc_url, jdbc_props):
         raw_df.unpersist()
         return
 
-    # Giải phóng raw load sau khi đã có klines_1d (Spark lazy evaluation sẽ dùng plan filter)
+    # Giải phóng cache sau khi đã xác định dữ liệu sạch
     raw_df.unpersist()
 
     # ── Volume trend: so sánh nửa sau vs nửa đầu ─────────────
@@ -100,8 +116,8 @@ def run(spark, jdbc_url, jdbc_props):
         .withColumn("total_rows", F.count("*").over(w_all))
         .withColumn(
             "half",
-            F.when(F.col("row_num") <= F.col("total_rows") / 2, "first")
-            .otherwise("second")
+            F.when(F.col("row_num") <= F.col("total_rows") / 2, F.lit("first"))
+            .otherwise(F.lit("second"))
         )
     )
 
@@ -122,7 +138,7 @@ def run(spark, jdbc_url, jdbc_props):
                 F.col("second") / F.col("first")
             ).otherwise(F.lit(1.0))   # 1 nến → không có trend → coi là stable
         )
-        .select("symbol_id", F.col("volume_trend").cast("decimal(10,4)"))
+        .select("symbol_id", F.col("volume_trend").cast("decimal(10,4)").alias("volume_trend"))
     )
 
     # ── Aggregate chính trên 1d klines ───────────────────────
@@ -255,9 +271,9 @@ def run(spark, jdbc_url, jdbc_props):
         .filter(F.col("rank") <= TOP_N)
         .select(
             F.lit(TIMEFRAME).alias("timeframe"),
-            "rank",
-            "symbol_id",
-            "symbol_code",
+            F.col("rank"),
+            F.col("symbol_id"),
+            F.col("symbol_code"),
             F.col("total_volume_quote").cast("decimal(30,12)"),
             F.col("total_num_trades").cast("bigint"),
             F.col("avg_taker_buy_ratio").cast("decimal(10,6)"),
@@ -266,7 +282,7 @@ def run(spark, jdbc_url, jdbc_props):
             F.col("money_flow").cast("decimal(30,12)"),
             F.col("whale_buy_ratio").cast("decimal(10,6)"),
             F.col("long_term_score").cast("decimal(10,4)"),
-            "signal",
+            F.col("signal"),
             F.current_timestamp().alias("computed_at"),
         )
     )
