@@ -8,13 +8,14 @@ metadata:
   namespace: spark-etl
 data:
   # MinIO Internal Cluster DNS
-  MINIO_ENDPOINT: "minio.default.svc.cluster.local:9000"
+  MINIO_ENDPOINT: minio.bigdata.svc.cluster.local:9000
   MINIO_BUCKET: "binance"
   MINIO_SECURE: "false"
   
-  # PostgreSQL Internal DNS (Giả định postgres chạy ở namespace default)
-  JDBC_URL: "jdbc:postgresql://postgres.default.svc.cluster.local:5432/crypto_dw"
+  # PostgreSQL Internal DNS (Postgres running in bigdata namespace)
+  JDBC_URL: jdbc:postgresql://postgres.bigdata.svc.cluster.local:5432/crypto_dw
   
   # Spark Application Config
+  TOP_N_SYMBOLS: "100"
   SPARK_APP_NAME: "CryptoDW-K8s-Production"
   DATA_BASE_PATH: "s3a://binance/raw"

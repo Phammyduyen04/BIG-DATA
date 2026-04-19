@@ -15,9 +15,30 @@ metadata:
   namespace: spark-etl
   name: spark-role
 rules:
-- apiGroups: [""]
-  resources: ["pods", "services", "configmaps", "persistentvolumeclaims"]
-  verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - configmaps
+      - persistentvolumeclaims
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - delete
+      - deletecollection
+      - update
+      - patch
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+    verbs:
+      - get
+      - list
+      - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -25,9 +46,9 @@ metadata:
   name: spark-role-binding
   namespace: spark-etl
 subjects:
-- kind: ServiceAccount
-  name: spark-job-sa
-  namespace: spark-etl
+  - kind: ServiceAccount
+    name: spark-job-sa
+    namespace: spark-etl
 roleRef:
   kind: Role
   name: spark-role

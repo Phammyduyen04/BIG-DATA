@@ -51,11 +51,12 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
             if df.rdd.isEmpty():
                 continue
 
+            # Normalize: Binance ms -> Seconds before casting to timestamp
             df = df.select(
                 F.lit(symbol_id).cast("bigint").alias("symbol_id"),
                 F.lit(interval).alias("interval_code"),
-                F.to_timestamp(F.col("open_time")).alias("open_time"),
-                F.to_timestamp(F.col("close_time")).alias("close_time"),
+                (F.col("open_time") / 1000).cast("timestamp").alias("open_time"),
+                (F.col("close_time") / 1000).cast("timestamp").alias("close_time"),
                 F.col("open").cast("decimal(30,12)").alias("open_price"),
                 F.col("high").cast("decimal(30,12)").alias("high_price"),
                 F.col("low").cast("decimal(30,12)").alias("low_price"),
@@ -63,8 +64,12 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
                 F.col("volume").cast("decimal(30,12)").alias("volume_base"),
                 F.col("quote_volume").cast("decimal(30,12)").alias("volume_quote"),
                 F.col("num_trades").cast("bigint"),
-                F.col("taker_buy_quote_vol").cast("decimal(30,12)").alias("taker_buy_quote_volume"),
+                F.col("taker_buy_quote_volume").cast("decimal(30,12)").alias("taker_buy_quote_volume"),
             ).filter(F.col("open_time").isNotNull())
+
+            # Safety Audit: Print schema and time range to verify year is around 2024-2026
+            df.printSchema()
+            df.select(F.min("open_time"), F.max("open_time")).show()
 
             all_dfs.append(df)
             print(f"[klines] {symbol_dir} ({interval}) đã nạp")
@@ -76,6 +81,12 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
     final_df = all_dfs[0]
     for d in all_dfs[1:]:
         final_df = final_df.union(d)
+
+    # Khử trùng dữ liệu theo Key (Deduplication) để tránh lỗi ON CONFLICT trong Postgres
+    before_count = final_df.count()
+    final_df = final_df.dropDuplicates(["symbol_id", "interval_code", "open_time"])
+    after_count = final_df.count()
+    print(f"[klines] Dedup: before={before_count}, after={after_count}, removed={before_count - after_count}")
 
     # Cache để resample dùng lại mà không đọc file lần 2
     final_df = final_df.cache()

@@ -28,5 +28,6 @@ COPY config.py /opt/project/config.py
 ENV PYTHONPATH="${PYTHONPATH}:/opt/project"
 ENV SPARK_HOME="/opt/spark"
 
-ENTRYPOINT ["/opt/spark/bin/spark-submit"]
-CMD ["local:///opt/project/spark/jobs/launcher.py"]
+# ENV SPARK_HOME="/opt/spark"
+# Neutral Entrypoint: Inherit from base image (/opt/entrypoint.sh)
+

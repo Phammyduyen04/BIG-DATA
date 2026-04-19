@@ -14,7 +14,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: submitter
-        image: huytrongbeou1310/bigdata_spark_postgresql:v1.0.0
+        image: huytrongbeou1310/bigdata_spark_postgresql:v1.1.4
         imagePullPolicy: Always
         # Command: Gọi spark-submit trực tiếp với cấu hình Cluster Mode
         command: ["/opt/spark/bin/spark-submit"]
@@ -28,7 +28,7 @@ spec:
           - "--conf"
           - "spark.kubernetes.namespace=spark-etl"
           - "--conf"
-          - "spark.kubernetes.container.image=huytrongbeou1310/bigdata_spark_postgresql:v1.0.0"
+          - "spark.kubernetes.container.image=huytrongbeou1310/bigdata_spark_postgresql:v1.1.3"
           - "--conf"
           - "spark.kubernetes.container.imagePullPolicy=Always"
           - "--conf"
@@ -53,6 +53,8 @@ spec:
           - "--conf"
           - "spark.kubernetes.driverEnv.DATA_BASE_PATH=$(DATA_BASE_PATH)"
           - "--conf"
+          - "spark.kubernetes.driverEnv.TOP_N_SYMBOLS=$(TOP_N_SYMBOLS)"
+          - "--conf"
           - "spark.executorEnv.MINIO_ENDPOINT=$(MINIO_ENDPOINT)"
           - "--conf"
           - "spark.executorEnv.MINIO_ACCESS_KEY=$(MINIO_ACCESS_KEY)"
@@ -70,6 +72,8 @@ spec:
           - "spark.executorEnv.JDBC_PASSWORD=$(JDBC_PASSWORD)"
           - "--conf"
           - "spark.executorEnv.DATA_BASE_PATH=$(DATA_BASE_PATH)"
+          - "--conf"
+          - "spark.executorEnv.TOP_N_SYMBOLS=$(TOP_N_SYMBOLS)"
           # Trỏ đến Entrypoint Launcher
           - "local:///opt/project/spark/jobs/launcher.py"
         env:
@@ -82,6 +86,8 @@ spec:
           valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_SECURE } }
         - name: DATA_BASE_PATH
           valueFrom: { configMapKeyRef: { name: etl-config, key: DATA_BASE_PATH } }
+        - name: TOP_N_SYMBOLS
+          valueFrom: { configMapKeyRef: { name: etl-config, key: TOP_N_SYMBOLS } }
         - name: JDBC_URL
           valueFrom: { configMapKeyRef: { name: etl-config, key: JDBC_URL } }
         - name: MINIO_ACCESS_KEY
