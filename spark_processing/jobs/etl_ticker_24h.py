@@ -9,25 +9,30 @@ Chỉ load các symbol có trong import time
 from datetime import datetime
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, LongType
-from etl_utils import execute_sql, load_symbol_map, load_contract_df
+from etl_utils import execute_sql, load_symbol_map
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
     start_time = time.time()
     sym_map = load_symbol_map(spark, jdbc_url, jdbc_props)
     ticker_base = f"{data_base_path.rstrip('/')}/ticker"
 
-    print(f"[ticker_24h] Bắt đầu Bulk Load từ: {ticker_base}")
+    print(f"\n{'='*70}")
+    print(f"[ticker_24h] BẮT ĐẦU BẢN REFACTOR BULK READ (v1.1.5)")
+    print(f"[ticker_24h] Path: {ticker_base}")
+    print(f"{'='*70}")
 
-    # 1. Bulk Read toàn bộ JSON ticker (Recursive Discovery)
-    # Path format: .../raw/ticker/date=YYYY-MM-DD/symbol=SYMBOL/hour=HH/*.json
-    raw_df = spark.read.json(f"{ticker_base}/date=*/symbol=*/hour=/*.json")
+    # 1. Bulk Read với Discovery (basePath giúp nhận diện partition hierarchy)
+    # Glob pattern quét toàn bộ tệp JSON trong các thư mục date/symbol/hour
+    raw_df = spark.read.option("basePath", ticker_base).json(f"{ticker_base}/date=*/symbol=*/hour=*/*.json")
     
     if raw_df.rdd.isEmpty():
         print("[ticker_24h] Không tìm thấy dữ liệu trên S3, bỏ qua.")
         return
 
-    # 2. Trích xuất Metadata từ Path sử dụng Spark Native Functions (Tránh lặp Driver)
-    # regexp_extract lấy (date, symbol, hour) từ input_file_name()
+    raw_count = raw_df.count()
+
+    # 2. Trích xuất Metadata từ Path (Semantics: Top-of-the-hour snapshot)
+    # regexp_extract lấy (date, symbol, hour) từ đường dẫn tệp S3 thực tế
     path_regex = r"date=([^/]+)/symbol=([^/]+)/hour=([^/]+)"
     
     transformed_df = (
@@ -35,14 +40,14 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
         .withColumn("_date",   F.regexp_extract(F.col("_path"), path_regex, 1))
         .withColumn("_symbol", F.regexp_extract(F.col("_path"), path_regex, 2))
         .withColumn("_hour",   F.regexp_extract(F.col("_path"), path_regex, 3))
-        # Chuẩn hóa snapshot_time: lấy đầu giờ của partition
+        # Chuẩn hóa snapshot_time theo logic cũ: Round về đầu giờ YYYY-MM-DD HH:00:00
         .withColumn(
             "snapshot_time", 
             F.to_timestamp(F.concat(F.col("_date"), F.lit(" "), F.col("_hour"), F.lit(":00:00")))
         )
     )
 
-    # 3. Join với dim_symbols một lần duy nhất (Broadcast)
+    # 3. Join với dim_symbols (Duy nhất 1 lần Broadcast join cho toàn bộ Data)
     sym_rows = [(k, v) for k, v in sym_map.items()]
     sym_schema = StructType([
         StructField("symbol_code", StringType()),
@@ -50,7 +55,7 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
     ])
     sym_lkp = spark.createDataFrame(sym_rows, schema=sym_schema)
 
-    final_df = (
+    joined_df = (
         transformed_df.join(F.broadcast(sym_lkp), transformed_df._symbol == sym_lkp.symbol_code, "inner")
         .select(
             F.col("symbol_id"),
@@ -67,17 +72,21 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
         )
     )
 
-    # 4. Dedup và Metrics
-    before_count = final_df.count()
-    final_df = final_df.dropDuplicates(["symbol_id", "snapshot_time"])
-    after_count = final_df.count()
-    
-    print(f"[ticker_24h] Metrics:")
-    print(f"  - Tổng row trước dedup: {before_count}")
-    print(f"  - Tổng row sau dedup : {after_count}")
-    print(f"  - Số row bị loại bỏ   : {before_count - after_count}")
+    joined_count = joined_df.count()
 
-    # 5. Write JDBC (Overwrite Staging -> Upsert Fact)
+    # 4. Khử trùng (Dedup Semantics: One-record-per-symbol-per-hour)
+    # Giữ lại bản ghi đại diện (first-encountered) tương đương logic set() cũ
+    final_df = joined_df.dropDuplicates(["symbol_id", "snapshot_time"])
+    final_count = final_df.count()
+    
+    # In Metrics báo cáo hiệu năng
+    print(f"\n[ticker_24h] REFACTOR METRICS:")
+    print(f"  - Total Raw Rows Discoved   : {raw_count:,}")
+    print(f"  - Rows after Symbol Join    : {joined_count:,}")
+    print(f"  - Final Rows after Dedup    : {final_count:,}")
+    print(f"  - Duplicates Removed        : {joined_count - final_count:,}")
+
+    # 5. Thực thi Ghi (Overwrite Staging -> Postgres Upsert)
     final_df.write.jdbc(jdbc_url, "staging_fact_ticker_24h", mode="overwrite", properties=jdbc_props)
 
     execute_sql(spark, jdbc_url, jdbc_props, """
