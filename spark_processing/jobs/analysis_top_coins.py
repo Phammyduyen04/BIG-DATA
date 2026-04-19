@@ -64,15 +64,28 @@ def run(spark, jdbc_url, jdbc_props):
     print(f"\n[top_coins] Kiểm tra tính hợp lệ của dữ liệu đầu vào...")
     klines_1d.printSchema()
     
-    raw_count = klines_1d.cache().count()
-    # Loại bỏ các dòng có năm bất thường (VD: 58258, 58259)
-    klines_1d = klines_1d.filter(F.year(F.col("open_time")) < 3000)
+    raw_df = klines_1d.cache()
+    raw_count = raw_df.count()
+    
+    # Bộ lọc chặt chẽ: 2000 - 2100
+    klines_1d = raw_df.filter(
+        F.col("open_time").isNotNull() & 
+        F.year(F.col("open_time")).between(2000, 2100)
+    )
     clean_count = klines_1d.count()
     
     if raw_count != clean_count:
         print(f"[top_coins] WARNING: Đã lọc bỏ {raw_count - clean_count} dòng bị hỏng (Timestamp overflow).")
     else:
         print(f"[top_coins] Dữ liệu timestamp sạch ({clean_count} rows).")
+
+    if clean_count == 0:
+        print("[top_coins] Không còn dữ liệu sạch sau sanity filter, bỏ qua.")
+        raw_df.unpersist()
+        return
+
+    # Giải phóng raw load sau khi đã có klines_1d (Spark lazy evaluation sẽ dùng plan filter)
+    raw_df.unpersist()
 
     # ── Volume trend: so sánh nửa sau vs nửa đầu ─────────────
     # Chia các nến theo thứ tự thời gian thành 2 nửa per symbol,
