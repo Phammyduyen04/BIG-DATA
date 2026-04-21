@@ -1,0 +1,9 @@
+#backend
+cd BACKEND 
+#"BIG-DATA\BACKEND"
+docker compose up -d backend
+#frontend
+#BIG-DATA\FRONTEND
+cd FRONTEND
+npm i
+npm run dev

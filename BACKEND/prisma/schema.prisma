@@ -102,7 +102,7 @@ model FactRawTrade {
 
   @@unique([symbol_id, trade_id], name: "uq_raw_trades")
   @@index([symbol_id, trade_time(sort: Desc)], name: "idx_trades_lookup")
-  @@map("fact_raw_trades")
+  @@map("fact_recent_trades")
 }
 
 // ────────────────────────────────────────────────────
