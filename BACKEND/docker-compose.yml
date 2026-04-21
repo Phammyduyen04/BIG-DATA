@@ -2,36 +2,41 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine
     container_name: crypto_dw_db
+    profiles:
+      - local-db
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: your_password
-      POSTGRES_DB: crypto_dw
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    env_file:
+      - .env
     ports:
       - "5433:5432"
     volumes:
       - crypto_dw_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER}" ]
       interval: 10s
       timeout: 5s
       retries: 5
+    mem_limit: 512m
 
   backend:
     build: .
     container_name: crypto_backend_api
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
-      DATABASE_URL: "postgresql://postgres:your_password@postgres:5432/crypto_dw"
-      PORT: 3000
-      NODE_ENV: production
+      DATABASE_URL: "postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?schema=${DB_SCHEMA:-public}&sslmode=${DB_SSLMODE:-prefer}&connection_limit=${DB_CONNECTION_LIMIT:-15}&pool_timeout=${DB_POOL_TIMEOUT:-30}&connect_timeout=${DB_CONNECT_TIMEOUT:-15}"
+      PORT: ${PORT:-3000}
+      NODE_ENV: ${NODE_ENV:-production}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
+    env_file:
+      - .env
     ports:
       - "3000:3000"
     command: >
-      sh -c "npx prisma migrate deploy && npm start"
+      sh -c "if [ \"$RUN_MIGRATIONS\" = \"true\" ]; then npx prisma migrate deploy; fi && npm start"
 
 volumes:
   crypto_dw_postgres_data:
