@@ -40,8 +40,14 @@ LOG_DIR  = Path("logs")
 # ── Duration: 1 day ───────────────────────────────────────────────────────────
 STREAM_DURATION_SECONDS = 24 * 60 * 60
 
-# ── Historical klines lookback (1440 = 24h × 60 min at 1m) ───────────────────
-KLINES_LOOKBACK_LIMIT = 1440
+# ── Historical klines lookback (129,600 = 90 days × 1440 min at 1m) ───────────
+KLINES_LOOKBACK_LIMIT = 129600
+
+# ── Versioning ───────────────────────────────────────────────────────────────
+VERSION = "v1.4.7 - Phase B Performance (More Resources + Timing Log)"
+
+# ── Diagnostics Toggle ────────────────────────────────────────────────────────
+DEBUG_DIAGNOSTIC = os.getenv("DEBUG_DIAGNOSTIC", "false").lower() == "true"
 
 # ── Order book depth levels ───────────────────────────────────────────────────
 DEPTH_LEVELS = 20
@@ -65,8 +71,13 @@ MINIO_BUCKET     = os.getenv("MINIO_BUCKET", "binance")
 MINIO_SECURE     = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
 # Prefixes dữ liệu (Ghép thành: s3a://{bucket}/{prefix})
-PREFIX_KLINES    = os.getenv("MINIO_PREFIX_KLINES", "raw/klines/")
-PREFIX_DEPTH     = os.getenv("MINIO_PREFIX_DEPTH",  "raw/depth/")
-PREFIX_TICKER    = os.getenv("MINIO_PREFIX_TICKER", "raw/ticker/")
+PREFIX_KLINES    = os.getenv("MINIO_PREFIX_KLINES", "silver/klines/")
+PREFIX_DEPTH     = os.getenv("MINIO_PREFIX_DEPTH",  "silver/depth/")
+PREFIX_TICKER    = os.getenv("MINIO_PREFIX_TICKER", "silver/ticker/")
+PREFIX_TRADES    = os.getenv("MINIO_PREFIX_TRADES", "silver/trades/")
 
-SPARK_APP_NAME   = os.getenv("SPARK_APP_NAME", "read-minio-json")
+SPARK_APP_NAME   = os.getenv("SPARK_APP_NAME", "CryptoDW-Spark-ETL-v1.4.0")
+
+def now_iso():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()

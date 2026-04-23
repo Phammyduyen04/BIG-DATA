@@ -8,6 +8,7 @@ import os
 import re
 
 from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, LongType
 
 from etl_utils import execute_sql, load_symbol_map
 
@@ -17,82 +18,84 @@ _FNAME_RE = re.compile(r"^[A-Z]+_([^_]+)_\d{8}_\d{8}\.csv$")
 
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
-    from etl_utils import discover_symbols, load_contract_df
+    import time
+    import config
+    _start = time.time()
+
+    # Bước 1/6: Load symbol map từ Postgres
+    _t = time.time()
+    print(f"\n{'='*70}")
+    print(f"[klines] BẮT ĐẦU BULK LOAD (v1.4.7 - Phase B Performance)")
+    print(f"[klines] Buoc 1/6: Load symbol map tu Postgres ...")
     sym_map = load_symbol_map(spark, jdbc_url, jdbc_props)
-    klines_base = f"{data_base_path.rstrip('/')}/klines"
+    print(f"[klines]   -> {len(sym_map)} symbols ({time.time()-_t:.1f}s)")
 
-    all_dfs = []
+    klines_base = f"{data_base_path.rstrip('/')}/{config.PREFIX_KLINES.strip('/')}"
+    interval = "1m"
+    # Dùng directory path thay vì deep wildcard: 1 recursive LIST thay vì ~250k LIST calls
+    parquet_path = f"{klines_base}/interval={interval}/"
 
-    # Adapter: Tìm tất cả symbols có dữ liệu klines (mặc định check interval 1m)
-    symbol_dirs = discover_symbols(spark, klines_base, pattern="interval=1m/date=*/symbol=*")
-    
-    for symbol_dir in symbol_dirs:
-        symbol_id = sym_map.get(symbol_dir)
-        if symbol_id is None:
-            print(f"[klines] Bỏ qua '{symbol_dir}' – không có trong dim_symbols")
-            continue
+    # Bước 2/6: Đọc Silver Layer (lazy - chưa trigger compute)
+    _t = time.time()
+    print(f"[klines] Buoc 2/6: Doc Silver Layer (recursive dir, 1 LIST call) ...")
+    print(f"[klines]   Path: {parquet_path}")
+    raw_df = spark.read.option("mergeSchema", "true").parquet(parquet_path)
+    print(f"[klines]   -> Scan xong (lazy, chua compute) ({time.time()-_t:.1f}s)")
 
-        # Giữ nguyên contract intervals: Hiện tại tập trung 1m
-        intervals = ["1m"] 
-        
-        for interval in intervals:
-            # Glob path chuẩn cho layout partition thực tế
-            s3_glob_path = f"{klines_base}/interval={interval}/date=*/symbol={symbol_dir}/*/*.json"
-            
-            # Khôi phục 'fname' ảo để Regex _FNAME_RE hoạt động (Source of Truth Contract)
-            fname = f"{symbol_dir}_{interval}_99999999_99999999.csv"
-            m = _FNAME_RE.match(fname)
-            if not m: continue
-            
-            print(f"[klines] Đọc dữ liệu từ S3 cho {symbol_dir} ({interval})")
-            
-            # Adapter nạp JSON và khôi phục Contract cột
-            df = load_contract_df(spark, s3_glob_path, "klines")
-            if df.rdd.isEmpty():
-                continue
+    # Bước 3/6: Build transform DAG + broadcast join
+    _t = time.time()
+    print(f"[klines] Buoc 3/6: Build transform DAG + broadcast join symbols ...")
+    path_regex = r"symbol=([^/]+)"
+    sym_rows = [(k, v) for k, v in sym_map.items()]
+    sym_schema = StructType([
+        StructField("symbol_code", StringType()),
+        StructField("symbol_id",   LongType()),
+    ])
+    sym_lkp = spark.createDataFrame(sym_rows, schema=sym_schema)
 
-            # Normalize: Binance ms -> Seconds before casting to timestamp
-            df = df.select(
-                F.lit(symbol_id).cast("bigint").alias("symbol_id"),
-                F.lit(interval).alias("interval_code"),
-                (F.col("open_time") / 1000).cast("timestamp").alias("open_time"),
-                (F.col("close_time") / 1000).cast("timestamp").alias("close_time"),
-                F.col("open").cast("decimal(30,12)").alias("open_price"),
-                F.col("high").cast("decimal(30,12)").alias("high_price"),
-                F.col("low").cast("decimal(30,12)").alias("low_price"),
-                F.col("close").cast("decimal(30,12)").alias("close_price"),
-                F.col("volume").cast("decimal(30,12)").alias("volume_base"),
-                F.col("quote_volume").cast("decimal(30,12)").alias("volume_quote"),
-                F.col("num_trades").cast("bigint"),
-                F.col("taker_buy_quote_vol").cast("decimal(30,12)").alias("taker_buy_quote_volume"),
-            ).filter(F.col("open_time").isNotNull())
+    transformed_df = (
+        raw_df.withColumn("_path", F.input_file_name())
+        .withColumn("_symbol_code", F.regexp_extract(F.col("_path"), path_regex, 1))
+        .join(F.broadcast(sym_lkp), F.col("_symbol_code") == sym_lkp.symbol_code, "inner")
+        .select(
+            F.col("symbol_id"),
+            F.lit(interval).alias("interval_code"),
+            (F.col("open_time") / 1000).cast("timestamp").alias("open_time"),
+            (F.col("close_time") / 1000).cast("timestamp").alias("close_time"),
+            F.col("open").cast("decimal(30,12)").alias("open_price"),
+            F.col("high").cast("decimal(30,12)").alias("high_price"),
+            F.col("low").cast("decimal(30,12)").alias("low_price"),
+            F.col("close").cast("decimal(30,12)").alias("close_price"),
+            F.col("volume").cast("decimal(30,12)").alias("volume_base"),
+            F.col("quote_volume").cast("decimal(30,12)").alias("volume_quote"),
+            F.col("num_trades").cast("bigint"),
+            F.col("taker_buy_quote_vol").cast("decimal(30,12)").alias("taker_buy_quote_volume"),
+        )
+        .filter(F.col("open_time").isNotNull())
+    )
+    print(f"[klines]   -> DAG build xong ({time.time()-_t:.1f}s)")
 
-            # Safety Audit: Print schema and time range to verify year is around 2024-2026
-            df.printSchema()
-            df.select(F.min("open_time"), F.max("open_time")).show()
+    # Bước 4/6: Dedup + cache + count() — trigger thực sự compute Spark
+    _t = time.time()
+    print(f"[klines] Buoc 4/6: Dedup + cache + count() — TRIGGER SPARK COMPUTE ...")
+    print(f"[klines]   (Day la buoc nang nhat: doc S3 + join + dedup tren tat ca workers)")
+    final_df = transformed_df.dropDuplicates(["symbol_id", "interval_code", "open_time"]).cache()
+    final_count = final_df.count()
+    compute_time = time.time() - _t
+    estimated_write = max(10, final_count / 50000)
+    print(f"[klines]   -> {final_count:,} rows (compute: {compute_time:.1f}s)")
+    print(f"[klines]   -> Du kien ghi JDBC staging: ~{estimated_write:.0f}s | UPSERT: ~{estimated_write*0.8:.0f}s")
 
-            all_dfs.append(df)
-            print(f"[klines] {symbol_dir} ({interval}) đã nạp")
+    # Bước 5/6: Ghi staging JDBC (4 luồng song song)
+    _t = time.time()
+    print(f"[klines] Buoc 5/6: Ghi {final_count:,} rows vao staging_fact_klines (JDBC x4 parallel) ...")
+    write_props = {**jdbc_props, "numPartitions": "4"}
+    final_df.write.jdbc(jdbc_url, "staging_fact_klines", mode="overwrite", properties=write_props)
+    print(f"[klines]   -> Ghi staging xong ({time.time()-_t:.1f}s)")
 
-    if not all_dfs:
-        print("[klines] Không có file nào, bỏ qua.")
-        return None
-
-    final_df = all_dfs[0]
-    for d in all_dfs[1:]:
-        final_df = final_df.union(d)
-
-    # Khử trùng dữ liệu theo Key (Deduplication) để tránh lỗi ON CONFLICT trong Postgres
-    before_count = final_df.count()
-    final_df = final_df.dropDuplicates(["symbol_id", "interval_code", "open_time"])
-    after_count = final_df.count()
-    print(f"[klines] Dedup: before={before_count}, after={after_count}, removed={before_count - after_count}")
-
-    # Cache để resample dùng lại mà không đọc file lần 2
-    final_df = final_df.cache()
-
-    final_df.write.jdbc(jdbc_url, "staging_fact_klines", mode="overwrite", properties=jdbc_props)
-
+    # Bước 6/6: UPSERT + dọn staging
+    _t = time.time()
+    print(f"[klines] Buoc 6/6: UPSERT vao fact_klines (ON CONFLICT UPDATE) ...")
     execute_sql(spark, jdbc_url, jdbc_props, """
         INSERT INTO fact_klines (
             symbol_id, interval_code, open_time, close_time,
@@ -116,6 +119,7 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
             taker_buy_quote_volume = EXCLUDED.taker_buy_quote_volume
     """)
     execute_sql(spark, jdbc_url, jdbc_props, "DROP TABLE IF EXISTS staging_fact_klines")
+    print(f"[klines]   -> UPSERT + don dep xong ({time.time()-_t:.1f}s)")
 
-    print(f"[klines] Đã load xong fact_klines")
-    return final_df   # trả về để resample dùng lại, tránh đọc Postgres lần 2
+    print(f"[klines] HOAN TAT: {final_count:,} rows trong {time.time()-_start:.1f}s")
+    return final_df

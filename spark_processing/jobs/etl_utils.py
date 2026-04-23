@@ -43,16 +43,47 @@ def get_spark_session(app_name=None):
         SparkSession.builder
         .appName(final_app_name)
         .config("spark.sql.session.timeZone", "UTC")
-        # Hadoop S3A configurations
+        # S3A / MinIO
         .config("spark.hadoop.fs.s3a.endpoint", config.MINIO_ENDPOINT)
         .config("spark.hadoop.fs.s3a.access.key", config.MINIO_ACCESS_KEY)
         .config("spark.hadoop.fs.s3a.secret.key", config.MINIO_SECRET_KEY)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "true" if config.MINIO_SECURE else "false")
-        # Optimization for K8s
-        .config("spark.sql.shuffle.partitions", "4")
-        .config("spark.driver.extraJavaOptions", "-Divy.home=/tmp/ivy_cache")
+        .config("spark.hadoop.fs.s3a.connection.maximum", "100")
+        .config("spark.hadoop.fs.s3a.connection.establish.timeout", "5000")
+        .config("spark.hadoop.fs.s3a.connection.timeout", "30000")
+        # Fast multipart upload — reduces write latency to MinIO
+        .config("spark.hadoop.fs.s3a.fast.upload", "true")
+        .config("spark.hadoop.fs.s3a.fast.upload.buffer", "bytebuffer")
+        .config("spark.hadoop.fs.s3a.multipart.size", "67108864")
+        .config("spark.hadoop.fs.s3a.threads.max", "50")
+        .config("spark.hadoop.fs.s3a.attempts.maximum", "5")
+        # Small-file merging: pack nhiều Parquet nhỏ vào ít partition lớn
+        .config("spark.sql.files.maxPartitionBytes", "268435456")
+        .config("spark.sql.files.openCostInBytes", "4194304")
+        # Parallel partition discovery — list 250k S3 dirs song song thay vì tuần tự
+        # Threshold=1: bật ngay từ 1 path; parallelism=32: 32 threads list đồng thời
+        .config("spark.sql.sources.parallelPartitionDiscovery.threshold", "1")
+        .config("spark.sql.sources.parallelPartitionDiscovery.parallelism", "32")
+        # Adaptive Query Execution — coalesces shuffle partitions dynamically
+        .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.sql.adaptive.skewJoin.enabled", "true")
+        # Higher starting value lets AQE coalesce down to actual optimal
+        .config("spark.sql.shuffle.partitions", "200")
+        # Mixed-schema tolerance: old files have DOUBLE, new files have STRING.
+        # The vectorized reader cannot convert DOUBLE→STRING; the row-based
+        # reader (ParquetRecordReader) handles this gracefully.
+        .config("spark.sql.parquet.enableVectorizedReader", "false")
+        # Faster serialization
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+        # Network resilience for Tailscale/VM cluster
+        .config("spark.network.timeout", "600s")
+        .config("spark.rpc.askTimeout", "600s")
+        .config("spark.executor.heartbeatInterval", "60s")
+        .config("spark.driver.extraJavaOptions", "-Divy.home=/tmp/ivy_cache -XX:+UseG1GC")
+        .config("spark.executor.extraJavaOptions", "-XX:+UseG1GC -XX:G1HeapRegionSize=4m")
     )
 
     return builder.getOrCreate()
@@ -105,10 +136,10 @@ def discover_symbols(spark, base_path, pattern="interval=*/date=*/symbol=*"):
 
 def load_contract_df(spark, s3a_path, module_type):
     """
-    Compatibility Adapter: Đọc JSON và khôi phục đúng Contract (Column Names).
-    Đảm bảo 100% processing logic không bị lỗi do mismatch tên cột JSON.
+    Compatibility Adapter: Đọc Parquet và khôi phục đúng Contract (Column Names).
+    Đảm bảo 100% processing logic không bị lỗi do mismatch tên cột.
     """
-    df = spark.read.json(s3a_path)
+    df = spark.read.option("mergeSchema", "true").parquet(s3a_path)
     if df.rdd.isEmpty():
         return df
 
@@ -135,12 +166,18 @@ def load_contract_df(spark, s3a_path, module_type):
                 df = df.withColumnRenamed(old_col, new_col)
                 
     elif module_type == "trades":
+        # DIALOG: Identify existing columns to detect contract mismatch
+        current_cols = df.columns
+        print(f"[ContractAdapter] Trades Columns Detected: {current_cols}")
+        
         # Restore trade semantics expected by etl_trades.py
-        mapping = {
-            "quote_volume": "quote_qty",
-        }
-        for old_col, new_col in mapping.items():
-            if old_col in df.columns:
-                df = df.withColumnRenamed(old_col, new_col)
+        # priority: 1. quote_qty (ideal) 2. quote_volume (fallback)
+        if "quote_qty" not in current_cols and "quote_volume" in current_cols:
+            print("[ContractAdapter] Remapping quote_volume -> quote_qty for trades")
+            df = df.withColumnRenamed("quote_volume", "quote_qty")
+        
+        # Check for symbol column (is it in file or just in partition?)
+        if "symbol" not in current_cols:
+            print("[ContractAdapter] WARNING: 'symbol' column missing from file content. Relying on partition.")
 
     return df

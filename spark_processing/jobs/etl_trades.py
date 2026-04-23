@@ -1,159 +1,135 @@
 """
-ETL: mart_trade_metrics (money flow + whale signals per symbol)
-
-Nguồn: trades/{SYMBOL}/{SYMBOL}-trades-{date}.csv
-Cột CSV: trade_id, price, qty, quote_qty, time, is_buyer_maker, is_best_match
-
-Thiết kế mới (bỏ fact_raw_trades):
-  - MinIO giữ full historical raw trades → không cần lưu 9.7M rows vào Postgres
-  - Spark đọc CSV → groupBy per symbol → chỉ ghi mart_trade_metrics (~N_symbols rows)
-  - Không staging table, không JDBC write cho raw trades
-  - mart_whale_alerts bị xoá — whale alerts chuyển sang streaming (real-time only)
-
-Luồng:
-  [1] Spark đọc toàn bộ trades CSV
-  [2] Pass 1 (groupBy): tính avg, stddev, whale_threshold per symbol
-  [3] Pass 2 (join + groupBy): tính total_buy/sell/money_flow/whale_buy_ratio
-  [4] TRUNCATE mart_trade_metrics rồi append kết quả (~N_symbols rows)
-
-Whale threshold per symbol = GREATEST(avg + 2σ, avg × 3)
+ETL: mart_trade_metrics (money flow + whale signals per symbol, hourly)
+Nguồn: silver/trades/date=*/symbol=*/hour=*/...parquet
 """
 import os
-
 from pyspark.sql import functions as F
-
-from etl_utils import execute_sql, load_symbol_map
-
-_FNAME_PREFIX = "-trades-"
-
+from pyspark.sql.types import StructType, StructField, StringType, LongType
+from etl_utils import execute_sql, load_symbol_map, load_contract_df
+import config
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
-    # Reduced Mode Guard: Thoát sớm nếu launcher xác định thiếu dữ liệu trades
+    import time
+    _start = time.time()
+
     if os.environ.get("SKIP_ETL_TRADES") == "TRUE":
-        print("[trades] REDUCED MODE ENABLED: Skipping trades processing due to missing input data.")
+        print("[trades] REDUCED MODE ENABLED: Skipping trades processing.")
         return
 
-    from etl_utils import load_contract_df
+    print(f"\n{'='*70}")
+    print(f"[trades] BẮT ĐẦU BULK LOAD (v1.4.7 - Phase B Performance)")
+    print(f"{'='*70}")
+
+    # Bước 1/7: Load symbol map
+    _t = time.time()
+    print(f"[trades] Buoc 1/7: Load symbol map tu Postgres ...")
     sym_map = load_symbol_map(spark, jdbc_url, jdbc_props)
-    trades_base = f"{data_base_path.rstrip('/')}/trades"
+    print(f"[trades]   -> {len(sym_map)} symbols ({time.time()-_t:.1f}s)")
 
-    all_dfs = []
+    trades_base = f"{data_base_path.rstrip('/')}/{config.PREFIX_TRADES.strip('/')}"
+    # Dùng directory path: 1 recursive LIST thay vì ~250k LIST calls
+    parquet_path = f"{trades_base}/"
 
-    # Discovery: Tìm tất cả symbols có dữ liệu trades (layout partitioned theo date)
-    from etl_utils import discover_symbols
-    symbol_dirs = discover_symbols(spark, trades_base, pattern="date=*/symbol=*")
-    
-    for symbol_dir in symbol_dirs:
-        symbol_id = sym_map.get(symbol_dir)
-        if symbol_id is None:
-            print(f"[trades] Bỏ qua '{symbol_dir}' – không có trong dim_symbols")
-            continue
-
-        # Adapter: Nạp toàn bộ JSON trades cho symbol này (recursive glob)
-        # raw/trades/date=*/symbol=BTCUSDT/hour=*/*.json
-        s3_glob_path = f"{data_base_path.rstrip('/')}/trades/date=*/symbol={symbol_dir}/hour=*/*.json"
-        
-        print(f"[trades] Đọc dữ liệu từ S3 cho {symbol_dir}")
-        
-        # Adapter nạp JSON và khôi phục Contract cột (quote_volume -> quote_qty, ...)
-        df = load_contract_df(spark, s3_glob_path, "trades")
-        if df.rdd.isEmpty():
-            continue
-
-        df = df.select(
-            F.lit(symbol_id).cast("bigint").alias("symbol_id"),
-            F.col("quote_qty").cast("decimal(30,12)"),
-            F.col("is_buyer_maker").cast("boolean").alias("is_buyer_maker"),
-        ).filter(F.col("quote_qty").isNotNull())
-
-        all_dfs.append(df)
-        print(f"[trades] {symbol_dir} đã nạp thành công")
-
-    if not all_dfs:
-        print("[trades] Không có file nào, bỏ qua.")
+    # Bước 2/7: Đọc Silver Layer trades (lazy)
+    _t = time.time()
+    print(f"[trades] Buoc 2/7: Doc Silver Layer (recursive dir, 1 LIST call) ...")
+    print(f"[trades]   Path: {parquet_path}")
+    raw_df = load_contract_df(spark, parquet_path, "trades")
+    if raw_df.limit(1).count() == 0:
+        print(f"[trades] CANH BAO: Khong co records. Bo qua.")
         return
+    print(f"[trades]   -> Scan co du lieu ({time.time()-_t:.1f}s)")
 
-    final_df = all_dfs[0]
-    for d in all_dfs[1:]:
-        final_df = final_df.union(d)
+    # Bước 3/7: Extract metadata + hour bucket + join symbols
+    _t = time.time()
+    print(f"[trades] Buoc 3/7: Extract metadata + join symbols (broadcast) ...")
+    path_regex = r"date=([^/]+)/symbol=([^/]+)/hour=([^/]+)"
+    ext_df = (
+        raw_df.withColumn("_path", F.input_file_name())
+        .withColumn("_date",   F.regexp_extract(F.col("_path"), path_regex, 1))
+        .withColumn("_symbol", F.regexp_extract(F.col("_path"), path_regex, 2))
+        .withColumn("_hour",   F.regexp_extract(F.col("_path"), path_regex, 3))
+        .withColumn(
+            "hour_bucket",
+            F.to_timestamp(F.concat(F.col("_date"), F.lit(" "), F.col("_hour"), F.lit(":00:00")))
+        )
+    )
+    sym_rows = [(k, v) for k, v in sym_map.items()]
+    sym_schema = StructType([
+        StructField("symbol_code", StringType()),
+        StructField("symbol_id",   LongType()),
+    ])
+    sym_lkp = spark.createDataFrame(sym_rows, schema=sym_schema)
+    joined_df = ext_df.join(F.broadcast(sym_lkp), F.col("_symbol") == sym_lkp.symbol_code, "inner")
+    print(f"[trades]   -> DAG build xong ({time.time()-_t:.1f}s)")
 
-    # ── Pass 1: tính whale_threshold per symbol (groupBy nhẹ) ─────────
-    print("[trades] Tính whale_threshold per symbol...")
+    # Bước 4/7: Filter + cache + count() — trigger compute
+    _t = time.time()
+    print(f"[trades] Buoc 4/7: Filter + cache + count() — TRIGGER SPARK COMPUTE ...")
+    print(f"[trades]   (Doc S3 trades + join + filter tren tat ca workers)")
+    final_df = (
+        joined_df.select(
+            "symbol_id",
+            "hour_bucket",
+            F.col("quote_qty").cast("decimal(30,12)"),
+            F.col("is_buyer_maker").cast("boolean"),
+        )
+        .filter(F.col("quote_qty").isNotNull())
+        .cache()
+    )
+    raw_count = final_df.count()
+    compute_time = time.time() - _t
+    print(f"[trades]   -> {raw_count:,} trade records (compute: {compute_time:.1f}s)")
+
+    # Bước 5/7: Pass 1 — tính whale threshold
+    _t = time.time()
+    print(f"[trades] Buoc 5/7: Pass 1 — Tinh whale threshold (avg + 2*stddev per symbol/hour) ...")
     stats = (
-        final_df.groupBy("symbol_id")
+        final_df.groupBy("symbol_id", "hour_bucket")
         .agg(
             F.avg("quote_qty").alias("avg_qty"),
             F.coalesce(F.stddev("quote_qty"), F.lit(0.0)).alias("std_qty"),
         )
         .withColumn(
             "whale_threshold",
-            F.greatest(
-                F.col("avg_qty") + F.lit(2.0) * F.col("std_qty"),
-                F.col("avg_qty") * F.lit(3.0),
-            ),
+            F.greatest(F.col("avg_qty") + F.lit(2.0) * F.col("std_qty"), F.col("avg_qty") * F.lit(3.0)),
         )
-        .select("symbol_id", "whale_threshold")
+        .select("symbol_id", "hour_bucket", "whale_threshold")
     )
+    print(f"[trades]   -> Whale threshold DAG ready ({time.time()-_t:.1f}s)")
 
-    # ── Pass 2: broadcast join stats → tính metrics per symbol ────────
-    # stats rất nhỏ (<100 rows) → broadcast để tránh shuffle lớn
-    print("[trades] Tính mart_trade_metrics...")
-    enriched = final_df.join(F.broadcast(stats), "symbol_id")
-
+    # Bước 6/7: Pass 2 — tổng hợp money flow + whale signals
+    _t = time.time()
+    print(f"[trades] Buoc 6/7: Pass 2 — Tong hop money flow + whale signals ...")
     metrics = (
-        enriched.groupBy("symbol_id")
+        final_df.join(F.broadcast(stats), ["symbol_id", "hour_bucket"])
+        .groupBy("symbol_id", "hour_bucket")
         .agg(
-            F.sum(
-                F.when(~F.col("is_buyer_maker"), F.col("quote_qty")).otherwise(F.lit(0))
-            ).alias("total_buy_volume"),
-            F.sum(
-                F.when(F.col("is_buyer_maker"), F.col("quote_qty")).otherwise(F.lit(0))
-            ).alias("total_sell_volume"),
+            F.sum(F.when(~F.col("is_buyer_maker"), F.col("quote_qty")).otherwise(F.lit(0))).alias("total_buy_volume"),
+            F.sum(F.when(F.col("is_buyer_maker"), F.col("quote_qty")).otherwise(F.lit(0))).alias("total_sell_volume"),
             F.count(F.lit(1)).alias("total_trades"),
             F.first("whale_threshold").alias("whale_threshold"),
-            F.sum(
-                F.when(
-                    (F.col("quote_qty") > F.col("whale_threshold")) & ~F.col("is_buyer_maker"),
-                    F.col("quote_qty"),
-                ).otherwise(F.lit(0))
-            ).alias("whale_buy_volume"),
-            F.sum(
-                F.when(
-                    (F.col("quote_qty") > F.col("whale_threshold")) & F.col("is_buyer_maker"),
-                    F.col("quote_qty"),
-                ).otherwise(F.lit(0))
-            ).alias("whale_sell_volume"),
+            F.sum(F.when((F.col("quote_qty") > F.col("whale_threshold")) & ~F.col("is_buyer_maker"), F.col("quote_qty")).otherwise(F.lit(0))).alias("whale_buy_volume"),
+            F.sum(F.when((F.col("quote_qty") > F.col("whale_threshold")) & F.col("is_buyer_maker"), F.col("quote_qty")).otherwise(F.lit(0))).alias("whale_sell_volume"),
         )
         .withColumn("money_flow", F.col("total_buy_volume") - F.col("total_sell_volume"))
         .withColumn(
             "whale_buy_ratio",
-            F.when(
-                (F.col("whale_buy_volume") + F.col("whale_sell_volume")) > 0,
-                F.col("whale_buy_volume")
-                / (F.col("whale_buy_volume") + F.col("whale_sell_volume")),
-            ),
+            F.when((F.col("whale_buy_volume") + F.col("whale_sell_volume")) > 0,
+            F.col("whale_buy_volume") / (F.col("whale_buy_volume") + F.col("whale_sell_volume"))),
         )
         .withColumn("computed_at", F.current_timestamp())
-        .select(
-            "symbol_id",
-            F.col("total_buy_volume").cast("decimal(30,12)"),
-            F.col("total_sell_volume").cast("decimal(30,12)"),
-            F.col("money_flow").cast("decimal(30,12)"),
-            F.col("total_trades").cast("bigint"),
-            F.col("whale_threshold").cast("decimal(30,12)"),
-            F.col("whale_buy_volume").cast("decimal(30,12)"),
-            F.col("whale_sell_volume").cast("decimal(30,12)"),
-            F.col("whale_buy_ratio").cast("decimal(10,6)"),
-            "computed_at",
-        )
     )
+    final_metrics = metrics.dropDuplicates(["symbol_id", "hour_bucket"])
+    print(f"[trades]   -> Metrics DAG ready ({time.time()-_t:.1f}s)")
 
-    # ── Ghi mart_trade_metrics (TRUNCATE + append) ────────────────────
+    # Bước 7/7: TRUNCATE + ghi mart_trade_metrics (4 luồng song song)
+    _t = time.time()
+    print(f"[trades] Buoc 7/7: TRUNCATE + ghi mart_trade_metrics (JDBC x4 parallel) ...")
     execute_sql(spark, jdbc_url, jdbc_props, "TRUNCATE mart_trade_metrics")
-    metrics.write.jdbc(
-        jdbc_url,
-        "mart_trade_metrics",
-        mode="append",
-        properties=jdbc_props,
-    )
-    print("[trades] mart_trade_metrics xong")
+    write_props = {**jdbc_props, "numPartitions": "4"}
+    final_metrics.write.jdbc(jdbc_url, "mart_trade_metrics", mode="append", properties=write_props)
+    print(f"[trades]   -> Ghi mart_trade_metrics xong ({time.time()-_t:.1f}s)")
+
+    final_df.unpersist()
+    print(f"[trades] HOAN TAT mart_trade_metrics trong {time.time()-_start:.1f}s")

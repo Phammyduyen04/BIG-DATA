@@ -11,7 +11,7 @@ USER root
 RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
 
 # Cài đặt các thư viện Python
-RUN pip install --no-cache-dir python-dotenv boto3
+RUN pip install --no-cache-dir python-dotenv boto3 pandas pyarrow
 
 # Thư mục làm việc
 WORKDIR /opt/project
@@ -25,7 +25,7 @@ RUN wget https://jdbc.postgresql.org/download/postgresql-42.7.3.jar -P /opt/spar
 COPY jobs /opt/project/spark/jobs/
 COPY config.py /opt/project/config.py
 
-ENV PYTHONPATH="${PYTHONPATH}:/opt/project"
+ENV PYTHONPATH="/opt/project"
 ENV SPARK_HOME="/opt/spark"
 
 # ENV SPARK_HOME="/opt/spark"

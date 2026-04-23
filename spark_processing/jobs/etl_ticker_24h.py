@@ -5,42 +5,34 @@ from pyspark.sql.types import StructType, StructField, StringType, LongType
 from etl_utils import execute_sql, load_symbol_map
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
-    start_time = time.time()
-    sym_map = load_symbol_map(spark, jdbc_url, jdbc_props)
-    ticker_base = f"{data_base_path.rstrip('/')}/ticker"
+    import config
+    _start = time.time()
 
     print(f"\n{'='*70}")
-    print(f"[ticker_24h] BẮT ĐẦU BẢN REFACTOR BULK READ (v1.1.5)")
-    print(f"[ticker_24h] Path: {ticker_base}")
+    print(f"[ticker_24h] BẮT ĐẦU BULK LOAD (v1.4.7 - Phase B Performance)")
     print(f"{'='*70}")
 
-    # 1. Bulk Read với Discovery (basePath giúp nhận diện partition hierarchy)
-    # Glob pattern quét toàn bộ tệp JSON trong các thư mục date/symbol/hour
-    raw_df = spark.read.option("basePath", ticker_base).json(f"{ticker_base}/date=*/symbol=*/hour=*/*.json")
-    
-    if raw_df.rdd.isEmpty():
-        print("[ticker_24h] Không tìm thấy dữ liệu trên S3, bỏ qua.")
-        return
+    # Bước 1/6: Load symbol map
+    _t = time.time()
+    print(f"[ticker_24h] Buoc 1/6: Load symbol map tu Postgres ...")
+    sym_map = load_symbol_map(spark, jdbc_url, jdbc_props)
+    print(f"[ticker_24h]   -> {len(sym_map)} symbols ({time.time()-_t:.1f}s)")
 
-    raw_count = raw_df.count()
+    ticker_base = f"{data_base_path.rstrip('/')}/{config.PREFIX_TICKER.strip('/')}"
+    # Dùng directory path: 1 recursive LIST thay vì ~250k LIST calls
+    parquet_path = f"{ticker_base}/"
 
-    # 2. Trích xuất Metadata từ Path (Semantics: Top-of-the-hour snapshot)
-    # regexp_extract lấy (date, symbol, hour) từ đường dẫn tệp S3 thực tế
+    # Bước 2/6: Đọc Silver Layer ticker (lazy)
+    _t = time.time()
+    print(f"[ticker_24h] Buoc 2/6: Doc Silver Layer ticker (recursive dir, 1 LIST call) ...")
+    print(f"[ticker_24h]   Path: {parquet_path}")
+    raw_df = spark.read.option("mergeSchema", "true").parquet(parquet_path)
+    print(f"[ticker_24h]   -> Scan xong (lazy) ({time.time()-_t:.1f}s)")
+
+    # Bước 3/6: Build transform DAG + broadcast join
+    _t = time.time()
+    print(f"[ticker_24h] Buoc 3/6: Build transform DAG + broadcast join symbols ...")
     path_regex = r"date=([^/]+)/symbol=([^/]+)/hour=([^/]+)"
-    
-    transformed_df = (
-        raw_df.withColumn("_path", F.input_file_name())
-        .withColumn("_date",   F.regexp_extract(F.col("_path"), path_regex, 1))
-        .withColumn("_symbol", F.regexp_extract(F.col("_path"), path_regex, 2))
-        .withColumn("_hour",   F.regexp_extract(F.col("_path"), path_regex, 3))
-        # Chuẩn hóa snapshot_time theo logic cũ: Round về đầu giờ YYYY-MM-DD HH:00:00
-        .withColumn(
-            "snapshot_time", 
-            F.to_timestamp(F.concat(F.col("_date"), F.lit(" "), F.col("_hour"), F.lit(":00:00")))
-        )
-    )
-
-    # 3. Join với dim_symbols (Duy nhất 1 lần Broadcast join cho toàn bộ Data)
     sym_rows = [(k, v) for k, v in sym_map.items()]
     sym_schema = StructType([
         StructField("symbol_code", StringType()),
@@ -48,8 +40,16 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
     ])
     sym_lkp = spark.createDataFrame(sym_rows, schema=sym_schema)
 
-    joined_df = (
-        transformed_df.join(F.broadcast(sym_lkp), transformed_df._symbol == sym_lkp.symbol_code, "inner")
+    transformed_df = (
+        raw_df.withColumn("_path", F.input_file_name())
+        .withColumn("_date",   F.regexp_extract(F.col("_path"), path_regex, 1))
+        .withColumn("_symbol", F.regexp_extract(F.col("_path"), path_regex, 2))
+        .withColumn("_hour",   F.regexp_extract(F.col("_path"), path_regex, 3))
+        .withColumn(
+            "snapshot_time",
+            F.to_timestamp(F.concat(F.col("_date"), F.lit(" "), F.col("_hour"), F.lit(":00:00")))
+        )
+        .join(F.broadcast(sym_lkp), F.col("_symbol") == sym_lkp.symbol_code, "inner")
         .select(
             F.col("symbol_id"),
             F.col("snapshot_time"),
@@ -64,24 +64,29 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
             F.current_timestamp().alias("ingested_at"),
         )
     )
+    print(f"[ticker_24h]   -> DAG build xong ({time.time()-_t:.1f}s)")
 
-    joined_count = joined_df.count()
-
-    # 4. Khử trùng (Dedup Semantics: One-record-per-symbol-per-hour)
-    # Giữ lại bản ghi đại diện (first-encountered) tương đương logic set() cũ
-    final_df = joined_df.dropDuplicates(["symbol_id", "snapshot_time"])
+    # Bước 4/6: Dedup + cache + count() — trigger compute
+    _t = time.time()
+    print(f"[ticker_24h] Buoc 4/6: Dedup + cache + count() — TRIGGER SPARK COMPUTE ...")
+    print(f"[ticker_24h]   (Doc S3 ticker + join + dedup tren tat ca workers)")
+    final_df = transformed_df.dropDuplicates(["symbol_id", "snapshot_time"]).cache()
     final_count = final_df.count()
-    
-    # In Metrics báo cáo hiệu năng
-    print(f"\n[ticker_24h] REFACTOR METRICS:")
-    print(f"  - Total Raw Rows Discoved   : {raw_count:,}")
-    print(f"  - Rows after Symbol Join    : {joined_count:,}")
-    print(f"  - Final Rows after Dedup    : {final_count:,}")
-    print(f"  - Duplicates Removed        : {joined_count - final_count:,}")
+    compute_time = time.time() - _t
+    estimated_write = max(5, final_count / 50000)
+    print(f"[ticker_24h]   -> {final_count:,} rows (compute: {compute_time:.1f}s)")
+    print(f"[ticker_24h]   -> Du kien ghi staging: ~{estimated_write:.0f}s | UPSERT: ~{estimated_write*0.8:.0f}s")
 
-    # 5. Thực thi Ghi (Overwrite Staging -> Postgres Upsert)
-    final_df.write.jdbc(jdbc_url, "staging_fact_ticker_24h", mode="overwrite", properties=jdbc_props)
+    # Bước 5/6: Ghi staging JDBC (4 luồng song song)
+    _t = time.time()
+    print(f"[ticker_24h] Buoc 5/6: Ghi {final_count:,} rows vao staging_fact_ticker_24h (JDBC x4 parallel) ...")
+    write_props = {**jdbc_props, "numPartitions": "4"}
+    final_df.write.jdbc(jdbc_url, "staging_fact_ticker_24h", mode="overwrite", properties=write_props)
+    print(f"[ticker_24h]   -> Ghi staging xong ({time.time()-_t:.1f}s)")
 
+    # Bước 6/6: UPSERT + dọn staging
+    _t = time.time()
+    print(f"[ticker_24h] Buoc 6/6: UPSERT vao fact_ticker_24h_snapshots + don dep ...")
     execute_sql(spark, jdbc_url, jdbc_props, """
         INSERT INTO fact_ticker_24h_snapshots (
             symbol_id, snapshot_time, price_change, price_change_percent,
@@ -105,7 +110,7 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
             ingested_at          = EXCLUDED.ingested_at
     """)
     execute_sql(spark, jdbc_url, jdbc_props, "DROP TABLE IF EXISTS staging_fact_ticker_24h")
+    print(f"[ticker_24h]   -> UPSERT + don dep xong ({time.time()-_t:.1f}s)")
 
-    duration = time.time() - start_time
-    print(f"[ticker_24h] Hoàn tất nạp {final_count} rows trong {duration:.2f}s")
-    print(f"[ticker_24h] Đã load xong fact_ticker_24h_snapshots")
+    final_df.unpersist()
+    print(f"[ticker_24h] HOAN TAT: {final_count:,} rows trong {time.time()-_start:.1f}s")

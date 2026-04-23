@@ -14,7 +14,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: submitter
-        image: huytrongbeou1310/bigdata_spark_postgresql:v1.1.11
+        image: huytrongbeou1310/bigdata_spark_postgresql:v1.4.7
         imagePullPolicy: Always
         # Command: Gọi spark-submit trực tiếp với cấu hình Cluster Mode
         command: ["/opt/spark/bin/spark-submit"]
@@ -28,7 +28,7 @@ spec:
           - "--conf"
           - "spark.kubernetes.namespace=spark-etl"
           - "--conf"
-          - "spark.kubernetes.container.image=huytrongbeou1310/bigdata_spark_postgresql:v1.1.11"
+          - "spark.kubernetes.container.image=huytrongbeou1310/bigdata_spark_postgresql:v1.4.7"
           - "--conf"
           - "spark.kubernetes.container.imagePullPolicy=Always"
           - "--conf"
@@ -55,6 +55,14 @@ spec:
           - "--conf"
           - "spark.kubernetes.driverEnv.TOP_N_SYMBOLS=$(TOP_N_SYMBOLS)"
           - "--conf"
+          - "spark.kubernetes.driverEnv.MINIO_PREFIX_KLINES=$(MINIO_PREFIX_KLINES)"
+          - "--conf"
+          - "spark.kubernetes.driverEnv.MINIO_PREFIX_TICKER=$(MINIO_PREFIX_TICKER)"
+          - "--conf"
+          - "spark.kubernetes.driverEnv.MINIO_PREFIX_DEPTH=$(MINIO_PREFIX_DEPTH)"
+          - "--conf"
+          - "spark.kubernetes.driverEnv.MINIO_PREFIX_TRADES=$(MINIO_PREFIX_TRADES)"
+          - "--conf"
           - "spark.executorEnv.MINIO_ENDPOINT=$(MINIO_ENDPOINT)"
           - "--conf"
           - "spark.executorEnv.MINIO_ACCESS_KEY=$(MINIO_ACCESS_KEY)"
@@ -74,6 +82,45 @@ spec:
           - "spark.executorEnv.DATA_BASE_PATH=$(DATA_BASE_PATH)"
           - "--conf"
           - "spark.executorEnv.TOP_N_SYMBOLS=$(TOP_N_SYMBOLS)"
+          - "--conf"
+          - "spark.executorEnv.MINIO_PREFIX_KLINES=$(MINIO_PREFIX_KLINES)"
+          - "--conf"
+          - "spark.executorEnv.MINIO_PREFIX_TICKER=$(MINIO_PREFIX_TICKER)"
+          - "--conf"
+          - "spark.executorEnv.MINIO_PREFIX_DEPTH=$(MINIO_PREFIX_DEPTH)"
+          - "--conf"
+          - "spark.executorEnv.MINIO_PREFIX_TRADES=$(MINIO_PREFIX_TRADES)"
+          # ============================================================
+          # Resource Profile (v1.4.6 - 3-Worker Spread)
+          # worker1: 8.7g/3vCPU  worker2: 8.2g/7vCPU  worker3: 13.2g/5vCPU
+          # 3 executors × 4g RAM × 2 cores → K8s lands 1 executor per worker
+          # driver: 2g/1core trên worker còn chỗ
+          # ============================================================
+          - "--driver-memory"
+          - "3g"
+          - "--driver-cores"
+          - "1"
+          - "--executor-memory"
+          - "6g"
+          - "--executor-cores"
+          - "3"
+          - "--conf"
+          - "spark.executor.instances=3"
+          - "--conf"
+          - "spark.executor.memoryOverhead=768m"
+          - "--conf"
+          - "spark.driver.memoryOverhead=768m"
+          - "--conf"
+          - "spark.memory.fraction=0.75"
+          - "--conf"
+          - "spark.memory.storageFraction=0.4"
+          # Executor K8s request < limit: cho scheduler linh hoạt hơn khi
+          # node đang chạy MinIO/Postgres nhưng vẫn có đủ RAM thực tế
+          - "--conf"
+          - "spark.kubernetes.executor.request.cores=2500m"
+          - "--conf"
+          - "spark.kubernetes.driver.request.cores=1200m"
+          # ============================================================
           # Trỏ đến Entrypoint Launcher
           - "local:///opt/project/spark/jobs/launcher.py"
         env:
@@ -98,6 +145,14 @@ spec:
           valueFrom: { secretKeyRef: { name: etl-secrets, key: JDBC_USER } }
         - name: JDBC_PASSWORD
           valueFrom: { secretKeyRef: { name: etl-secrets, key: JDBC_PASSWORD } }
+        - name: MINIO_PREFIX_KLINES
+          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_PREFIX_KLINES } }
+        - name: MINIO_PREFIX_TICKER
+          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_PREFIX_TICKER } }
+        - name: MINIO_PREFIX_DEPTH
+          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_PREFIX_DEPTH } }
+        - name: MINIO_PREFIX_TRADES
+          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_PREFIX_TRADES } }
         resources:
           requests:
             cpu: "250m"
