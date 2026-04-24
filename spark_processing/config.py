@@ -44,7 +44,7 @@ STREAM_DURATION_SECONDS = 24 * 60 * 60
 KLINES_LOOKBACK_LIMIT = 129600
 
 # ── Versioning ───────────────────────────────────────────────────────────────
-VERSION = "v1.4.7 - Phase B Performance (More Resources + Timing Log)"
+VERSION = "v1.4.14 - recursiveFileLookup + ignoreCorruptFiles (fix 580s HEAD requests)"
 
 # ── Diagnostics Toggle ────────────────────────────────────────────────────────
 DEBUG_DIAGNOSTIC = os.getenv("DEBUG_DIAGNOSTIC", "false").lower() == "true"

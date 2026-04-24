@@ -29,9 +29,9 @@ def test_minio_boto3():
         
         # Liệt kê thử 3 prefix
         prefixes = [
-            os.getenv("MINIO_PREFIX_KLINES", "raw/klines/"),
-            os.getenv("MINIO_PREFIX_DEPTH", "raw/depth/"),
-            os.getenv("MINIO_PREFIX_TICKER", "raw/ticker/")
+            os.getenv("MINIO_PREFIX_KLINES", "silver/klines/"),
+            os.getenv("MINIO_PREFIX_DEPTH", "silver/depth/"),
+            os.getenv("MINIO_PREFIX_TICKER", "silver/ticker/")
         ]
         
         for p in prefixes:

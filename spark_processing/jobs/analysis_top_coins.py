@@ -14,7 +14,7 @@ def run(spark, jdbc_url, jdbc_props):
     read_props = {**jdbc_props, "fetchsize": "10000"}
 
     print(f"\n{'='*70}")
-    print(f"[top_coins] BẮT ĐẦU RANKING (v1.4.7 - Phase B Performance)")
+    print(f"[top_coins] BẮT ĐẦU RANKING (v1.4.9 - Explicit Schema)")
     print(f"{'='*70}")
 
     # Bước 1/6: Đọc klines 1d + trade_metrics + dim_symbols từ Postgres

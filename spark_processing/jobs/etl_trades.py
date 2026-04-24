@@ -4,9 +4,16 @@ Nguồn: silver/trades/date=*/symbol=*/hour=*/...parquet
 """
 import os
 from pyspark.sql import functions as F
-from pyspark.sql.types import StructType, StructField, StringType, LongType
+from pyspark.sql.types import StructType, StructField, StringType, LongType, BooleanType
 from etl_utils import execute_sql, load_symbol_map, load_contract_df
 import config
+
+# Explicit read schema: chỉ 3 cột trades ETL cần
+TRADES_READ_SCHEMA = StructType([
+    StructField("quote_qty",      StringType(),  True),
+    StructField("quote_volume",   StringType(),  True),  # tên cũ, coalesced bởi load_contract_df
+    StructField("is_buyer_maker", BooleanType(), True),
+])
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
     import time
@@ -17,7 +24,7 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
         return
 
     print(f"\n{'='*70}")
-    print(f"[trades] BẮT ĐẦU BULK LOAD (v1.4.7 - Phase B Performance)")
+    print(f"[trades] BẮT ĐẦU BULK LOAD (v1.4.9 - Explicit Schema)")
     print(f"{'='*70}")
 
     # Bước 1/7: Load symbol map
@@ -32,13 +39,13 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
 
     # Bước 2/7: Đọc Silver Layer trades (lazy)
     _t = time.time()
-    print(f"[trades] Buoc 2/7: Doc Silver Layer (recursive dir, 1 LIST call) ...")
+    print(f"[trades] Buoc 2/7: Doc Silver Layer (Hadoop recursive listing) ...")
     print(f"[trades]   Path: {parquet_path}")
-    raw_df = load_contract_df(spark, parquet_path, "trades")
-    if raw_df.limit(1).count() == 0:
-        print(f"[trades] CANH BAO: Khong co records. Bo qua.")
+    raw_df = load_contract_df(spark, parquet_path, "trades", schema=TRADES_READ_SCHEMA)
+    if raw_df is None:
+        print(f"[trades] CANH BAO: Khong co parquet files. Bo qua.")
         return
-    print(f"[trades]   -> Scan co du lieu ({time.time()-_t:.1f}s)")
+    print(f"[trades]   -> Danh sach files xong, DAG san sang ({time.time()-_t:.1f}s)")
 
     # Bước 3/7: Extract metadata + hour bucket + join symbols
     _t = time.time()

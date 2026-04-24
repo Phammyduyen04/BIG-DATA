@@ -76,6 +76,9 @@ def get_spark_session(app_name=None):
         # The vectorized reader cannot convert DOUBLE→STRING; the row-based
         # reader (ParquetRecordReader) handles this gracefully.
         .config("spark.sql.parquet.enableVectorizedReader", "false")
+        # Bỏ qua file lỗi (PlainDoubleDictionary UnsupportedOperationException)
+        # thay vì fail toàn bộ job. File bị skip sẽ có warning trong log.
+        .config("spark.sql.files.ignoreCorruptFiles", "true")
         # Faster serialization
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
         # Network resilience for Tailscale/VM cluster
@@ -134,50 +137,135 @@ def discover_symbols(spark, base_path, pattern="interval=*/date=*/symbol=*"):
     return sorted(list(symbols))
 
 
-def load_contract_df(spark, s3a_path, module_type):
+def _collect_parquet_paths(spark, s3a_path):
     """
-    Compatibility Adapter: Đọc Parquet và khôi phục đúng Contract (Column Names).
-    Đảm bảo 100% processing logic không bị lỗi do mismatch tên cột.
+    2-phase parallel listing:
+      Phase 1: listStatus(root) — 1 API call, lấy danh sách top-level subdirs (date=*)
+      Phase 2: 32 Python threads, mỗi thread listFiles(subdir, recursive=True)
+               Mỗi subdir ~100 files → 1 API call không phân trang → chạy song song
+    Kết quả: ~2-3s thay vì 29s (sequential pagination qua Tailscale).
+    S3AFileSystem là thread-safe nên dùng chung 1 instance an toàn.
     """
-    df = spark.read.option("mergeSchema", "true").parquet(s3a_path)
-    if df.rdd.isEmpty():
-        return df
+    import concurrent.futures
+
+    sc = spark.sparkContext
+    jvm = sc._gateway.jvm
+    Path = jvm.org.apache.hadoop.fs.Path
+    FileSystem = jvm.org.apache.hadoop.fs.FileSystem
+    uri = jvm.java.net.URI(s3a_path)
+    fs = FileSystem.get(uri, sc._jsc.hadoopConfiguration())
+
+    # Phase 1: list immediate children (1 API call)
+    top_statuses = fs.listStatus(Path(s3a_path))
+    sub_dirs = [
+        s.getPath().toString()
+        for s in top_statuses
+        if s.isDirectory() and not s.getPath().getName().startswith("_")
+    ]
+
+    def _list_subdir(subdir):
+        it = fs.listFiles(Path(subdir), True)
+        result = []
+        while it.hasNext():
+            p = it.next().getPath().toString()
+            if p.endswith(".parquet"):
+                result.append(p)
+        return result
+
+    if not sub_dirs:
+        # Flat structure (no subdirs): fall back to single recursive listing
+        return _list_subdir(s3a_path)
+
+    # Phase 2: parallel per-subdir listing
+    all_paths = []
+    workers = min(32, len(sub_dirs))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        for partial in pool.map(_list_subdir, sub_dirs):
+            all_paths.extend(partial)
+    return all_paths
+
+
+def load_contract_df(spark, s3a_path, module_type, schema=None):
+    """
+    Compatibility Adapter: Fast S3 read + contract normalization.
+
+    Khi có explicit schema:
+      spark.read.schema(schema).option("recursiveFileLookup", "true").parquet(dir)
+      → Spark gọi fs.listFiles(recursive=True) nội bộ = flat S3 listing (~20s cho 2301 files)
+      → KHÔNG gọi getFileStatus riêng lẻ từng file (tránh 2301 HEAD requests × 250ms = 575s)
+      → KHÔNG đọc Parquet footer → tránh event_time INT/BIGINT CANNOT_MERGE_SCHEMAS
+      → File DOUBLE-encoded bị bỏ qua nhờ ignoreCorruptFiles=true (set ở SparkSession)
+
+    Fallback (schema=None): mergeSchema=True với directory path.
+    """
+    from pyspark.sql import functions as F
+    import time
+
+    _t = time.time()
+
+    # Kiểm tra path tồn tại: 1 non-recursive listStatus call (không list toàn bộ)
+    sc = spark.sparkContext
+    jvm = sc._gateway.jvm
+    Path = jvm.org.apache.hadoop.fs.Path
+    FileSystem = jvm.org.apache.hadoop.fs.FileSystem
+    uri = jvm.java.net.URI(s3a_path)
+    fs = FileSystem.get(uri, sc._jsc.hadoopConfiguration())
+    try:
+        top = fs.listStatus(Path(s3a_path))
+        if not top:
+            print(f"[ContractAdapter] Path rong: {s3a_path}")
+            return None
+    except Exception as e:
+        print(f"[ContractAdapter] Path khong ton tai: {s3a_path} — {e}")
+        return None
+
+    if schema is not None:
+        print(f"[ContractAdapter] Path OK ({time.time()-_t:.1f}s) — explicit schema + recursiveFileLookup ...")
+        # recursiveFileLookup=true: Spark dùng listFiles(recursive=True) = flat listing
+        # Không truyền explicit paths → không trigger N x getFileStatus HEAD requests
+        df = (spark.read
+              .schema(schema)
+              .option("recursiveFileLookup", "true")
+              .parquet(s3a_path))
+    else:
+        print(f"[ContractAdapter] Path OK ({time.time()-_t:.1f}s) — mergeSchema ...")
+        df = spark.read.option("mergeSchema", "true").parquet(s3a_path)
 
     if module_type == "klines":
-        # Restore contract: taker_buy_quote_volume -> taker_buy_quote_vol
-        # quote_volume -> quote_volume (giữ nguyên)
-        if "taker_buy_quote_volume" in df.columns:
+        if "taker_buy_quote_volume" in df.columns and "taker_buy_quote_vol" in df.columns:
+            df = (df.withColumn("taker_buy_quote_vol",
+                      F.coalesce(F.col("taker_buy_quote_vol"), F.col("taker_buy_quote_volume")))
+                  .drop("taker_buy_quote_volume"))
+        elif "taker_buy_quote_volume" in df.columns:
             df = df.withColumnRenamed("taker_buy_quote_volume", "taker_buy_quote_vol")
-            
+
     elif module_type == "ticker":
-        # Restore camelCase contract cho Ticker 24h logic
         mapping = {
-            "price_change": "priceChange",
+            "price_change":         "priceChange",
             "price_change_percent": "priceChangePercent",
-            "last_price": "lastPrice",
-            "high_price": "highPrice",
-            "low_price": "lowPrice",
-            "volume": "volume",
-            "quote_volume": "quoteVolume",
-            "num_trades": "count" # match legacy count column
+            "last_price":           "lastPrice",
+            "high_price":           "highPrice",
+            "low_price":            "lowPrice",
+            "volume":               "volume",
+            "quote_volume":         "quoteVolume",
+            "num_trades":           "count",
         }
         for old_col, new_col in mapping.items():
             if old_col in df.columns:
-                df = df.withColumnRenamed(old_col, new_col)
-                
+                if new_col in df.columns:
+                    df = (df.withColumn(new_col, F.coalesce(F.col(new_col), F.col(old_col)))
+                          .drop(old_col))
+                else:
+                    df = df.withColumnRenamed(old_col, new_col)
+
     elif module_type == "trades":
-        # DIALOG: Identify existing columns to detect contract mismatch
         current_cols = df.columns
-        print(f"[ContractAdapter] Trades Columns Detected: {current_cols}")
-        
-        # Restore trade semantics expected by etl_trades.py
-        # priority: 1. quote_qty (ideal) 2. quote_volume (fallback)
         if "quote_qty" not in current_cols and "quote_volume" in current_cols:
-            print("[ContractAdapter] Remapping quote_volume -> quote_qty for trades")
             df = df.withColumnRenamed("quote_volume", "quote_qty")
-        
-        # Check for symbol column (is it in file or just in partition?)
-        if "symbol" not in current_cols:
-            print("[ContractAdapter] WARNING: 'symbol' column missing from file content. Relying on partition.")
+        elif "quote_qty" in current_cols and "quote_volume" in current_cols:
+            df = (df.withColumn("quote_qty", F.coalesce(F.col("quote_qty"), F.col("quote_volume")))
+                  .drop("quote_volume"))
+        if "symbol" not in df.columns:
+            print("[ContractAdapter] WARNING: 'symbol' column missing. Relying on partition path.")
 
     return df

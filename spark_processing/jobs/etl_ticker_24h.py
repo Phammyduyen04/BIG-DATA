@@ -2,14 +2,35 @@ import time
 from datetime import datetime
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, LongType
-from etl_utils import execute_sql, load_symbol_map
+from etl_utils import execute_sql, load_symbol_map, load_contract_df
+
+# Explicit read schema: gồm cả tên camelCase (file mới) lẫn snake_case (file cũ)
+# load_contract_df sẽ coalesce các cặp tên cũ/mới về camelCase
+TICKER_READ_SCHEMA = StructType([
+    StructField("symbol",               StringType(), True),
+    StructField("priceChange",          StringType(), True),
+    StructField("price_change",         StringType(), True),
+    StructField("priceChangePercent",   StringType(), True),
+    StructField("price_change_percent", StringType(), True),
+    StructField("lastPrice",            StringType(), True),
+    StructField("last_price",           StringType(), True),
+    StructField("highPrice",            StringType(), True),
+    StructField("high_price",           StringType(), True),
+    StructField("lowPrice",             StringType(), True),
+    StructField("low_price",            StringType(), True),
+    StructField("volume",               StringType(), True),
+    StructField("quoteVolume",          StringType(), True),
+    StructField("quote_volume",         StringType(), True),
+    StructField("count",                LongType(),   True),
+    StructField("num_trades",           LongType(),   True),
+])
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
     import config
     _start = time.time()
 
     print(f"\n{'='*70}")
-    print(f"[ticker_24h] BẮT ĐẦU BULK LOAD (v1.4.7 - Phase B Performance)")
+    print(f"[ticker_24h] BẮT ĐẦU BULK LOAD (v1.4.9 - Explicit Schema)")
     print(f"{'='*70}")
 
     # Bước 1/6: Load symbol map
@@ -22,12 +43,15 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
     # Dùng directory path: 1 recursive LIST thay vì ~250k LIST calls
     parquet_path = f"{ticker_base}/"
 
-    # Bước 2/6: Đọc Silver Layer ticker (lazy)
+    # Bước 2/6: Đọc Silver Layer ticker với explicit schema (không đọc footer từng file)
     _t = time.time()
-    print(f"[ticker_24h] Buoc 2/6: Doc Silver Layer ticker (recursive dir, 1 LIST call) ...")
+    print(f"[ticker_24h] Buoc 2/6: Doc Silver Layer ticker (Hadoop listing + mergeSchema) ...")
     print(f"[ticker_24h]   Path: {parquet_path}")
-    raw_df = spark.read.option("mergeSchema", "true").parquet(parquet_path)
-    print(f"[ticker_24h]   -> Scan xong (lazy) ({time.time()-_t:.1f}s)")
+    raw_df = load_contract_df(spark, parquet_path, "ticker", schema=TICKER_READ_SCHEMA)
+    if raw_df is None:
+        print(f"[ticker_24h] CANH BAO: Khong co parquet files. Bo qua.")
+        return
+    print(f"[ticker_24h]   -> File list + schema merge xong ({time.time()-_t:.1f}s)")
 
     # Bước 3/6: Build transform DAG + broadcast join
     _t = time.time()

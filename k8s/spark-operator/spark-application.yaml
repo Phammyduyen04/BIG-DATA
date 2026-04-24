@@ -1,0 +1,144 @@
+# ============================================================
+# SparkApplication: CryptoDW Production ETL
+# Replaces: k8s/job.yaml (spark-submit submitter pod pattern)
+# Namespace: spark-etl
+#
+# Apply:   kubectl apply -f k8s/spark-operator/spark-application.yaml
+# Monitor: kubectl get sparkapplication -n spark-etl
+#          kubectl describe sparkapplication cryptodw-production -n spark-etl
+#          kubectl logs -f -n spark-etl -l spark-role=driver
+# Delete:  kubectl delete -f k8s/spark-operator/spark-application.yaml
+#
+# Re-trigger a run (operator re-runs on re-apply):
+#   kubectl delete sparkapplication cryptodw-production -n spark-etl
+#   kubectl apply  -f k8s/spark-operator/spark-application.yaml
+# ============================================================
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: cryptodw-production
+  namespace: spark-etl
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: huytrongbeou1310/bigdata_spark_postgresql:v1.4.5
+  imagePullPolicy: Always
+  mainApplicationFile: local:///opt/project/spark/jobs/launcher.py
+  sparkVersion: "3.5.4"
+
+  # ------------------------------------------------------------------
+  # Spark configuration
+  # NOTE: Python code (etl_utils.get_spark_session) sets S3A endpoint +
+  # credentials from env vars at runtime — those override any sparkConf
+  # set here. Only static/performance configs go in this section.
+  # ------------------------------------------------------------------
+  sparkConf:
+    # Timezone
+    "spark.sql.session.timeZone": "UTC"
+
+    # Adaptive Query Execution — coalesces post-shuffle partitions
+    # dynamically, no code change needed; purely additive optimization.
+    "spark.sql.adaptive.enabled": "true"
+    "spark.sql.adaptive.coalescePartitions.enabled": "true"
+    "spark.sql.adaptive.skewJoin.enabled": "true"
+    # Start with 200 so AQE can coalesce down to actual optimal (4-20
+    # for this data scale). Python code may override to 12; that's fine
+    # but note AQE works better with a higher starting value.
+    "spark.sql.shuffle.partitions": "200"
+
+    # Faster serialization (~15-20% speedup for shuffle-heavy jobs)
+    "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
+
+    # Memory
+    "spark.memory.fraction": "0.75"
+    "spark.memory.storageFraction": "0.4"
+
+    # S3A static configs (no secrets here — credentials injected by Python)
+    "spark.hadoop.fs.s3a.path.style.access": "true"
+    "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    "spark.hadoop.fs.s3a.connection.ssl.enabled": "false"
+    "spark.hadoop.fs.s3a.connection.maximum": "50"
+    # Fast upload: buffers writes in JVM memory before multipart upload
+    "spark.hadoop.fs.s3a.fast.upload": "true"
+    "spark.hadoop.fs.s3a.fast.upload.buffer": "bytebuffer"
+    "spark.hadoop.fs.s3a.multipart.size": "67108864"
+    "spark.hadoop.fs.s3a.threads.max": "20"
+    "spark.hadoop.fs.s3a.connection.establish.timeout": "5000"
+    "spark.hadoop.fs.s3a.connection.timeout": "30000"
+    # Tolerate MinIO timeouts on VM networks
+    "spark.hadoop.fs.s3a.attempts.maximum": "5"
+    "spark.hadoop.fs.s3a.retry.interval": "500ms"
+
+    # Network resilience for multi-VM Tailscale cluster
+    "spark.network.timeout": "600s"
+    "spark.rpc.askTimeout": "600s"
+    "spark.executor.heartbeatInterval": "60s"
+    "spark.storage.blockManagerHeartbeatTimeoutMs": "300000"
+
+    # Avoid speculative execution on batch ETL (wastes resources on VMs)
+    "spark.speculation": "false"
+
+  # ------------------------------------------------------------------
+  # Retry policy — handles transient MinIO / Postgres timeouts on VMs
+  # ------------------------------------------------------------------
+  restartPolicy:
+    type: OnFailure
+    onFailureRetries: 2
+    onFailureRetryInterval: 15
+    onSubmissionFailureRetries: 3
+    onSubmissionFailureRetryInterval: 20
+
+  # ------------------------------------------------------------------
+  # Driver
+  # ------------------------------------------------------------------
+  driver:
+    cores: 1
+    coreLimit: "1200m"
+    coreRequest: "800m"
+    memory: "2g"
+    memoryOverhead: "512m"
+    serviceAccount: spark-job-sa
+    javaOptions: "-Divy.home=/tmp/ivy_cache -XX:+UseG1GC -XX:G1HeapRegionSize=4m"
+    labels:
+      spark-role: driver
+      app: cryptodw-etl
+    envFrom:
+      - configMapRef:
+          name: etl-config
+      - secretRef:
+          name: etl-secrets
+
+  # ------------------------------------------------------------------
+  # Executor: 3 executors × 2 cores × 4g
+  # cluster: worker1 8.7g/3vCPU | worker2 8.2g/7vCPU | worker3 13.2g/5vCPU
+  # Mỗi executor 4g+512m overhead = 4.5g → K8s tự spread 1 per worker
+  # coreRequest < coreLimit: tránh block khi node đang chạy MinIO/Postgres
+  # ------------------------------------------------------------------
+  executor:
+    cores: 2
+    coreLimit: "2500m"
+    coreRequest: "1500m"
+    instances: 3
+    memory: "4g"
+    memoryOverhead: "512m"
+    javaOptions: "-XX:+UseG1GC -XX:G1HeapRegionSize=4m"
+    labels:
+      spark-role: executor
+      app: cryptodw-etl
+    # Prefer different nodes — tránh 2 executor cùng lên 1 worker
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  spark-role: executor
+                  app: cryptodw-etl
+              topologyKey: kubernetes.io/hostname
+    envFrom:
+      - configMapRef:
+          name: etl-config
+      - secretRef:
+          name: etl-secrets

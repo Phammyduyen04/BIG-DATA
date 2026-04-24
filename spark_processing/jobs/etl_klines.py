@@ -10,10 +10,26 @@ import re
 from pyspark.sql import functions as F
 from pyspark.sql.types import StructType, StructField, StringType, LongType
 
-from etl_utils import execute_sql, load_symbol_map
+from etl_utils import execute_sql, load_symbol_map, load_contract_df
 
 # Regex lấy interval từ tên file: BTCUSDT_1m_20260408_20260409.csv
 _FNAME_RE = re.compile(r"^[A-Z]+_([^_]+)_\d{8}_\d{8}\.csv$")
+
+# Explicit read schema: chỉ các cột ETL thực sự dùng.
+# Spark bỏ qua mọi cột khác (event_time, __index_level_0__, ...) mà không đọc footer.
+KLINES_READ_SCHEMA = StructType([
+    StructField("open_time",              LongType(),   True),
+    StructField("close_time",             LongType(),   True),
+    StructField("open",                   StringType(), True),
+    StructField("high",                   StringType(), True),
+    StructField("low",                    StringType(), True),
+    StructField("close",                  StringType(), True),
+    StructField("volume",                 StringType(), True),
+    StructField("quote_volume",           StringType(), True),
+    StructField("num_trades",             LongType(),   True),
+    StructField("taker_buy_quote_vol",    StringType(), True),
+    StructField("taker_buy_quote_volume", StringType(), True),  # tên cũ, coalesced bởi load_contract_df
+])
 
 
 
@@ -25,7 +41,7 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
     # Bước 1/6: Load symbol map từ Postgres
     _t = time.time()
     print(f"\n{'='*70}")
-    print(f"[klines] BẮT ĐẦU BULK LOAD (v1.4.7 - Phase B Performance)")
+    print(f"[klines] BẮT ĐẦU BULK LOAD (v1.4.9 - Explicit Schema)")
     print(f"[klines] Buoc 1/6: Load symbol map tu Postgres ...")
     sym_map = load_symbol_map(spark, jdbc_url, jdbc_props)
     print(f"[klines]   -> {len(sym_map)} symbols ({time.time()-_t:.1f}s)")
@@ -35,12 +51,15 @@ def run(spark, jdbc_url, jdbc_props, data_base_path):
     # Dùng directory path thay vì deep wildcard: 1 recursive LIST thay vì ~250k LIST calls
     parquet_path = f"{klines_base}/interval={interval}/"
 
-    # Bước 2/6: Đọc Silver Layer (lazy - chưa trigger compute)
+    # Bước 2/6: Đọc Silver Layer với explicit schema (không đọc footer từng file)
     _t = time.time()
-    print(f"[klines] Buoc 2/6: Doc Silver Layer (recursive dir, 1 LIST call) ...")
+    print(f"[klines] Buoc 2/6: Doc Silver Layer (Hadoop listing + mergeSchema) ...")
     print(f"[klines]   Path: {parquet_path}")
-    raw_df = spark.read.option("mergeSchema", "true").parquet(parquet_path)
-    print(f"[klines]   -> Scan xong (lazy, chua compute) ({time.time()-_t:.1f}s)")
+    raw_df = load_contract_df(spark, parquet_path, "klines", schema=KLINES_READ_SCHEMA)
+    if raw_df is None:
+        print(f"[klines] CANH BAO: Khong co parquet files. Bo qua.")
+        return None
+    print(f"[klines]   -> File list + schema merge xong ({time.time()-_t:.1f}s)")
 
     # Bước 3/6: Build transform DAG + broadcast join
     _t = time.time()
