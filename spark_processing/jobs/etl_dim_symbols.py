@@ -1,13 +1,13 @@
 """
 ETL: dim_symbols
-Nguồn: tên thư mục trong klines/ (BTCUSDT, ETHUSDT, ...)
+Nguồn: ticker_24h CSV (1 row/symbol = 100 rows) — nguồn symbol rẻ nhất
 Logic: UPSERT qua staging table
 """
 import os
 import time
 from pyspark.sql.types import StructType, StructField, StringType
 
-from etl_utils import execute_sql
+from etl_utils import execute_sql, load_csv_df, CSV_SCHEMA_TICKER
 
 # Thứ tự ưu tiên khi tách base/quote asset từ symbol code
 _QUOTE_ASSETS = ["USDT", "BUSD", "FDUSD", "BTC", "ETH", "BNB"]
@@ -17,23 +17,29 @@ def _parse_assets(symbol_code: str):
     for q in _QUOTE_ASSETS:
         if symbol_code.endswith(q):
             return symbol_code[: -len(q)], q
+    return symbol_code, ""
 
 def run(spark, jdbc_url, jdbc_props, data_base_path):
-    from etl_utils import discover_symbols
     import config
 
     _start = time.time()
     print(f"\n{'='*70}")
-    print(f"[dim_symbols] BẮT ĐẦU SYMBOL DISCOVERY (v1.3.0 - Pipeline Sync)")
-    print(f"[dim_symbols] Discovery Source: silver/klines")
+    print(f"[dim_symbols] BAT DAU SYMBOL DISCOVERY (v1.5.0 - CSV Benchmark)")
+    print(f"[dim_symbols] Discovery Source: ticker_24h CSV")
     print(f"{'='*70}")
 
-    klines_base = f"{data_base_path.rstrip('/')}/{config.PREFIX_KLINES.strip('/')}"
+    ticker_glob = (f"{data_base_path.rstrip('/')}"
+                   f"/{config.PREFIX_CSV_RAW.strip('/')}"
+                   f"/{config.CSV_FILENAME_TICKER}")
 
-    # Bước 1/4: Quét S3 tìm danh sách symbol
+    # Bước 1/4: Đọc ticker CSV để lấy danh sách symbol (100 rows)
     _t = time.time()
-    print(f"[dim_symbols] Buoc 1/4: Quet S3 layout {klines_base} ...")
-    symbol_codes = discover_symbols(spark, klines_base, pattern="interval=*/date=*/symbol=*")
+    print(f"[dim_symbols] Buoc 1/4: Doc ticker CSV {ticker_glob} ...")
+    ticker_df = load_csv_df(spark, ticker_glob, CSV_SCHEMA_TICKER)
+    if ticker_df is None:
+        raise RuntimeError(f"[dim_symbols] Ticker CSV khong ton tai tai: {ticker_glob}")
+    symbol_rows = ticker_df.select("symbol").distinct().collect()
+    symbol_codes = sorted([r.symbol for r in symbol_rows if r.symbol])
     print(f"[dim_symbols]   -> Phat hien {len(symbol_codes)} symbols ({time.time()-_t:.1f}s)")
 
     # Bước 2/4: Parse base/quote asset

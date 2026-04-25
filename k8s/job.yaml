@@ -14,7 +14,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: submitter
-        image: huytrongbeou1310/bigdata_spark_postgresql:v1.4.14
+        image: huytrongbeou1310/bigdata_spark_postgresql:v1.5.0-csv-bench
         imagePullPolicy: Always
         # Command: Gọi spark-submit trực tiếp với cấu hình Cluster Mode
         command: ["/opt/spark/bin/spark-submit"]
@@ -24,11 +24,11 @@ spec:
           - "--deploy-mode"
           - "cluster"
           - "--name"
-          - "CryptoDW-Production-Job"
+          - "CryptoDW-ETL-v1.5.0-csv-bench"
           - "--conf"
           - "spark.kubernetes.namespace=spark-etl"
           - "--conf"
-          - "spark.kubernetes.container.image=huytrongbeou1310/bigdata_spark_postgresql:v1.4.14"
+          - "spark.kubernetes.container.image=huytrongbeou1310/bigdata_spark_postgresql:v1.5.0-csv-bench"
           - "--conf"
           - "spark.kubernetes.container.imagePullPolicy=Always"
           - "--conf"
@@ -55,13 +55,7 @@ spec:
           - "--conf"
           - "spark.kubernetes.driverEnv.TOP_N_SYMBOLS=$(TOP_N_SYMBOLS)"
           - "--conf"
-          - "spark.kubernetes.driverEnv.MINIO_PREFIX_KLINES=$(MINIO_PREFIX_KLINES)"
-          - "--conf"
-          - "spark.kubernetes.driverEnv.MINIO_PREFIX_TICKER=$(MINIO_PREFIX_TICKER)"
-          - "--conf"
-          - "spark.kubernetes.driverEnv.MINIO_PREFIX_DEPTH=$(MINIO_PREFIX_DEPTH)"
-          - "--conf"
-          - "spark.kubernetes.driverEnv.MINIO_PREFIX_TRADES=$(MINIO_PREFIX_TRADES)"
+          - "spark.kubernetes.driverEnv.MINIO_PREFIX_CSV_RAW=$(MINIO_PREFIX_CSV_RAW)"
           - "--conf"
           - "spark.executorEnv.MINIO_ENDPOINT=$(MINIO_ENDPOINT)"
           - "--conf"
@@ -83,43 +77,42 @@ spec:
           - "--conf"
           - "spark.executorEnv.TOP_N_SYMBOLS=$(TOP_N_SYMBOLS)"
           - "--conf"
-          - "spark.executorEnv.MINIO_PREFIX_KLINES=$(MINIO_PREFIX_KLINES)"
-          - "--conf"
-          - "spark.executorEnv.MINIO_PREFIX_TICKER=$(MINIO_PREFIX_TICKER)"
-          - "--conf"
-          - "spark.executorEnv.MINIO_PREFIX_DEPTH=$(MINIO_PREFIX_DEPTH)"
-          - "--conf"
-          - "spark.executorEnv.MINIO_PREFIX_TRADES=$(MINIO_PREFIX_TRADES)"
+          - "spark.executorEnv.MINIO_PREFIX_CSV_RAW=$(MINIO_PREFIX_CSV_RAW)"
           # ============================================================
-          # Resource Profile (v1.4.6 - 3-Worker Spread)
-          # worker1: 8.7g/3vCPU  worker2: 8.2g/7vCPU  worker3: 13.2g/5vCPU
-          # 3 executors × 4g RAM × 2 cores → K8s lands 1 executor per worker
-          # driver: 2g/1core trên worker còn chỗ
+          # Resource Profile (v1.5.0 - 3-Worker, Postgres on control1)
+          # worker1/2/3: 4GB/2c each | executor: 1792m+512m overhead=2304MB
           # ============================================================
           - "--driver-memory"
-          - "3g"
+          - "1g"
           - "--driver-cores"
           - "1"
           - "--executor-memory"
-          - "6g"
+          - "1792m"
           - "--executor-cores"
-          - "3"
+          - "1"
           - "--conf"
           - "spark.executor.instances=3"
           - "--conf"
-          - "spark.executor.memoryOverhead=768m"
+          - "spark.executor.memoryOverhead=512m"
           - "--conf"
-          - "spark.driver.memoryOverhead=768m"
+          - "spark.driver.memoryOverhead=512m"
           - "--conf"
           - "spark.memory.fraction=0.75"
           - "--conf"
           - "spark.memory.storageFraction=0.4"
-          # Executor K8s request < limit: cho scheduler linh hoạt hơn khi
-          # node đang chạy MinIO/Postgres nhưng vẫn có đủ RAM thực tế
           - "--conf"
-          - "spark.kubernetes.executor.request.cores=2500m"
+          - "spark.sql.shuffle.partitions=6"
           - "--conf"
-          - "spark.kubernetes.driver.request.cores=1200m"
+          - "spark.default.parallelism=6"
+          - "--conf"
+          - "spark.sql.adaptive.enabled=true"
+          - "--conf"
+          - "spark.sql.adaptive.coalescePartitions.enabled=true"
+          # Executor K8s request < limit: cho scheduler linh hoạt hơn
+          - "--conf"
+          - "spark.kubernetes.executor.request.cores=800m"
+          - "--conf"
+          - "spark.kubernetes.driver.request.cores=800m"
           # ============================================================
           # Trỏ đến Entrypoint Launcher
           - "local:///opt/project/spark/jobs/launcher.py"
@@ -145,14 +138,8 @@ spec:
           valueFrom: { secretKeyRef: { name: etl-secrets, key: JDBC_USER } }
         - name: JDBC_PASSWORD
           valueFrom: { secretKeyRef: { name: etl-secrets, key: JDBC_PASSWORD } }
-        - name: MINIO_PREFIX_KLINES
-          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_PREFIX_KLINES } }
-        - name: MINIO_PREFIX_TICKER
-          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_PREFIX_TICKER } }
-        - name: MINIO_PREFIX_DEPTH
-          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_PREFIX_DEPTH } }
-        - name: MINIO_PREFIX_TRADES
-          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_PREFIX_TRADES } }
+        - name: MINIO_PREFIX_CSV_RAW
+          valueFrom: { configMapKeyRef: { name: etl-config, key: MINIO_PREFIX_CSV_RAW } }
         resources:
           requests:
             cpu: "250m"

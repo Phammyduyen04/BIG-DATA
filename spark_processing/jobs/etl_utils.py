@@ -50,38 +50,35 @@ def get_spark_session(app_name=None):
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "true" if config.MINIO_SECURE else "false")
-        .config("spark.hadoop.fs.s3a.connection.maximum", "100")
+        .config("spark.hadoop.fs.s3a.connection.maximum", "50")
         .config("spark.hadoop.fs.s3a.connection.establish.timeout", "5000")
         .config("spark.hadoop.fs.s3a.connection.timeout", "30000")
-        # Fast multipart upload — reduces write latency to MinIO
+        # Fast multipart upload cho spill/shuffle nếu có; CSV workload chủ yếu READ
         .config("spark.hadoop.fs.s3a.fast.upload", "true")
         .config("spark.hadoop.fs.s3a.fast.upload.buffer", "bytebuffer")
         .config("spark.hadoop.fs.s3a.multipart.size", "67108864")
-        .config("spark.hadoop.fs.s3a.threads.max", "50")
+        .config("spark.hadoop.fs.s3a.threads.max", "20")
         .config("spark.hadoop.fs.s3a.attempts.maximum", "5")
-        # Small-file merging: pack nhiều Parquet nhỏ vào ít partition lớn
-        .config("spark.sql.files.maxPartitionBytes", "268435456")
+        # CSV sequential scan optimization
+        .config("spark.hadoop.fs.s3a.experimental.input.fadvise", "sequential")
+        .config("spark.hadoop.fs.s3a.readahead.range", "256K")
+        .config("spark.hadoop.fs.s3a.block.size", "32M")
+        # File partition sizing for CSV (64MB chunks → 2GB klines ~32 tasks)
+        .config("spark.sql.files.maxPartitionBytes", "67108864")
         .config("spark.sql.files.openCostInBytes", "4194304")
-        # Parallel partition discovery — list 250k S3 dirs song song thay vì tuần tự
-        # Threshold=1: bật ngay từ 1 path; parallelism=32: 32 threads list đồng thời
-        .config("spark.sql.sources.parallelPartitionDiscovery.threshold", "1")
-        .config("spark.sql.sources.parallelPartitionDiscovery.parallelism", "32")
         # Adaptive Query Execution — coalesces shuffle partitions dynamically
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.sql.adaptive.coalescePartitions.initialPartitionNum", "48")
+        .config("spark.sql.adaptive.advisoryPartitionSizeInBytes", "67108864")
         .config("spark.sql.adaptive.skewJoin.enabled", "true")
-        # Higher starting value lets AQE coalesce down to actual optimal
-        .config("spark.sql.shuffle.partitions", "200")
-        # Mixed-schema tolerance: old files have DOUBLE, new files have STRING.
-        # The vectorized reader cannot convert DOUBLE→STRING; the row-based
-        # reader (ParquetRecordReader) handles this gracefully.
-        .config("spark.sql.parquet.enableVectorizedReader", "false")
-        # Bỏ qua file lỗi (PlainDoubleDictionary UnsupportedOperationException)
-        # thay vì fail toàn bộ job. File bị skip sẽ có warning trong log.
-        .config("spark.sql.files.ignoreCorruptFiles", "true")
+        .config("spark.sql.shuffle.partitions", "48")
+        # Executor memory budget (small executors: 2.5GB heap)
+        .config("spark.memory.fraction", "0.7")
+        .config("spark.memory.storageFraction", "0.3")
         # Faster serialization
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-        # Network resilience for Tailscale/VM cluster
+        # Network resilience for VM cluster
         .config("spark.network.timeout", "600s")
         .config("spark.rpc.askTimeout", "600s")
         .config("spark.executor.heartbeatInterval", "60s")
@@ -268,4 +265,105 @@ def load_contract_df(spark, s3a_path, module_type, schema=None):
         if "symbol" not in df.columns:
             print("[ContractAdapter] WARNING: 'symbol' column missing. Relying on partition path.")
 
+    return df
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CSV BENCHMARK READERS  (flat DATA_SPLIT/<size>/ layout)
+# ══════════════════════════════════════════════════════════════════════════════
+
+from pyspark.sql.types import (
+    StructType, StructField, StringType, LongType, BooleanType,
+)
+
+# Klines CSV (14 cols) — có sẵn column `symbol`
+CSV_SCHEMA_KLINES = StructType([
+    StructField("open_time",           LongType(),   True),   # ms epoch
+    StructField("open",                StringType(), True),
+    StructField("high",                StringType(), True),
+    StructField("low",                 StringType(), True),
+    StructField("close",               StringType(), True),
+    StructField("volume",              StringType(), True),
+    StructField("close_time",          LongType(),   True),   # ms epoch
+    StructField("quote_asset_volume",  StringType(), True),
+    StructField("num_trades",          LongType(),   True),
+    StructField("taker_buy_base_vol",  StringType(), True),
+    StructField("taker_buy_quote_vol", StringType(), True),
+    StructField("ignore",              StringType(), True),
+    StructField("symbol",              StringType(), True),
+    StructField("open_time_dt",        StringType(), True),   # ISO string — unused
+])
+
+# Trades CSV (7 cols) — KHÔNG có symbol column; phải extract từ filename
+# `time` là MICROSECONDS (16-digit), phải chia 1_000_000 trước khi to_timestamp
+CSV_SCHEMA_TRADES = StructType([
+    StructField("trade_id",       LongType(),    True),
+    StructField("price",          StringType(),  True),
+    StructField("qty",            StringType(),  True),
+    StructField("quote_qty",      StringType(),  True),
+    StructField("time",           LongType(),    True),   # microseconds
+    StructField("is_buyer_maker", BooleanType(), True),
+    StructField("is_best_match",  BooleanType(), True),
+])
+
+# Ticker CSV (21 cols) — camelCase từ Binance REST API
+CSV_SCHEMA_TICKER = StructType([
+    StructField("symbol",             StringType(), True),
+    StructField("priceChange",        StringType(), True),
+    StructField("priceChangePercent", StringType(), True),
+    StructField("weightedAvgPrice",   StringType(), True),
+    StructField("prevClosePrice",     StringType(), True),
+    StructField("lastPrice",          StringType(), True),
+    StructField("lastQty",            StringType(), True),
+    StructField("bidPrice",           StringType(), True),
+    StructField("bidQty",             StringType(), True),
+    StructField("askPrice",           StringType(), True),
+    StructField("askQty",             StringType(), True),
+    StructField("openPrice",          StringType(), True),
+    StructField("highPrice",          StringType(), True),
+    StructField("lowPrice",           StringType(), True),
+    StructField("volume",             StringType(), True),
+    StructField("quoteVolume",        StringType(), True),
+    StructField("openTime",           LongType(),   True),   # ms epoch
+    StructField("closeTime",          LongType(),   True),
+    StructField("firstId",            LongType(),   True),
+    StructField("lastId",             LongType(),   True),
+    StructField("count",              LongType(),   True),
+])
+
+
+def load_csv_df(spark, s3a_glob, schema, header=True):
+    """
+    Đọc 1 hoặc nhiều CSV theo glob với explicit schema.
+
+    - globStatus preflight (1 API call) → fail fast nếu pattern không match file nào
+    - mode=PERMISSIVE: row lỗi thành NULL, job không crash
+    - Trả về None nếu không tìm thấy file — caller tự quyết định skip/abort.
+    """
+    import re
+    import time
+
+    _t = time.time()
+    sc = spark.sparkContext
+    jvm = sc._gateway.jvm
+    Path = jvm.org.apache.hadoop.fs.Path
+    FileSystem = jvm.org.apache.hadoop.fs.FileSystem
+
+    m = re.match(r"^(s3a?://[^/]+/).*", s3a_glob)
+    root = m.group(1) if m else s3a_glob
+    fs = FileSystem.get(jvm.java.net.URI(root), sc._jsc.hadoopConfiguration())
+
+    matched = fs.globStatus(Path(s3a_glob))
+    n = len(matched) if matched else 0
+    if n == 0:
+        print(f"[CsvReader] KHONG co file match glob: {s3a_glob}")
+        return None
+    print(f"[CsvReader] {n} file match ({time.time()-_t:.2f}s): {s3a_glob}")
+
+    df = (spark.read
+          .option("header", "true" if header else "false")
+          .option("mode", "PERMISSIVE")
+          .option("multiLine", "false")
+          .schema(schema)
+          .csv(s3a_glob))
     return df

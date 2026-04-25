@@ -22,7 +22,7 @@ spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: huytrongbeou1310/bigdata_spark_postgresql:v1.4.5
+  image: huytrongbeou1310/bigdata_spark_postgresql:v1.5.0-csv-bench
   imagePullPolicy: Always
   mainApplicationFile: local:///opt/project/spark/jobs/launcher.py
   sparkVersion: "3.5.4"
@@ -45,7 +45,8 @@ spec:
     # Start with 200 so AQE can coalesce down to actual optimal (4-20
     # for this data scale). Python code may override to 12; that's fine
     # but note AQE works better with a higher starting value.
-    "spark.sql.shuffle.partitions": "200"
+    "spark.sql.shuffle.partitions": "6"
+    "spark.default.parallelism": "6"
 
     # Faster serialization (~15-20% speedup for shuffle-heavy jobs)
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
@@ -110,17 +111,16 @@ spec:
           name: etl-secrets
 
   # ------------------------------------------------------------------
-  # Executor: 3 executors × 2 cores × 4g
-  # cluster: worker1 8.7g/3vCPU | worker2 8.2g/7vCPU | worker3 13.2g/5vCPU
-  # Mỗi executor 4g+512m overhead = 4.5g → K8s tự spread 1 per worker
-  # coreRequest < coreLimit: tránh block khi node đang chạy MinIO/Postgres
+  # Executor: 3 executors × 1 core × 1792m
+  # cluster: worker1/2/3 4GB/2c | Postgres on control1
+  # executor: 1792m+512m overhead=2304MB | 1 per worker
   # ------------------------------------------------------------------
   executor:
-    cores: 2
-    coreLimit: "2500m"
-    coreRequest: "1500m"
+    cores: 1
+    coreLimit: "1400m"
+    coreRequest: "800m"
     instances: 3
-    memory: "4g"
+    memory: "1792m"
     memoryOverhead: "512m"
     javaOptions: "-XX:+UseG1GC -XX:G1HeapRegionSize=4m"
     labels:

@@ -11,7 +11,7 @@ USER root
 RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
 
 # Cài đặt các thư viện Python
-RUN pip install --no-cache-dir python-dotenv boto3 pandas pyarrow
+RUN pip install --no-cache-dir python-dotenv boto3 pandas pyarrow psycopg2-binary
 
 # Thư mục làm việc
 WORKDIR /opt/project

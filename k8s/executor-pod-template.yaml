@@ -1,0 +1,22 @@
+# Executor pod template for Spark client mode.
+# Enforces 1 executor per worker node (requiredDuringScheduling anti-affinity).
+# Pass via: --conf spark.kubernetes.executor.podTemplateFile=<path>
+apiVersion: v1
+kind: Pod
+spec:
+  nodeSelector:
+    spark-role: worker
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              spark-role: executor
+          topologyKey: kubernetes.io/hostname
+  containers:
+    - name: spark-kubernetes-executor
+      envFrom:
+        - configMapRef:
+            name: etl-config
+        - secretRef:
+            name: etl-secrets

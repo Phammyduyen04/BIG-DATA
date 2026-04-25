@@ -17,9 +17,6 @@ data:
   
   # Spark Application Config
   TOP_N_SYMBOLS: "100"
-  SPARK_APP_NAME: "CryptoDW-Spark-ETL-v1.4.0"
   DATA_BASE_PATH: "s3a://binance"
-  MINIO_PREFIX_KLINES: "silver/klines/"
-  MINIO_PREFIX_TICKER: "silver/ticker/"
-  MINIO_PREFIX_DEPTH: "silver/depth/"
-  MINIO_PREFIX_TRADES: "silver/trades/"
+  MINIO_PREFIX_CSV_RAW: "DATA_SPLIT/100MB/"
+  SPARK_APP_NAME: "CryptoDW-Spark-ETL-v1.5.0-csv-bench"

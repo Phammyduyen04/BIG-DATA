@@ -44,7 +44,7 @@ STREAM_DURATION_SECONDS = 24 * 60 * 60
 KLINES_LOOKBACK_LIMIT = 129600
 
 # ── Versioning ───────────────────────────────────────────────────────────────
-VERSION = "v1.4.14 - recursiveFileLookup + ignoreCorruptFiles (fix 580s HEAD requests)"
+VERSION = "v1.5.0-csv-bench - CSV batch benchmark (flat DATA_SPLIT layout, client mode)"
 
 # ── Diagnostics Toggle ────────────────────────────────────────────────────────
 DEBUG_DIAGNOSTIC = os.getenv("DEBUG_DIAGNOSTIC", "false").lower() == "true"
@@ -70,13 +70,20 @@ MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET     = os.getenv("MINIO_BUCKET", "binance")
 MINIO_SECURE     = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
-# Prefixes dữ liệu (Ghép thành: s3a://{bucket}/{prefix})
+# Prefixes dữ liệu (Ghép thành: s3a://{bucket}/{prefix}) — legacy Parquet layout
 PREFIX_KLINES    = os.getenv("MINIO_PREFIX_KLINES", "silver/klines/")
 PREFIX_DEPTH     = os.getenv("MINIO_PREFIX_DEPTH",  "silver/depth/")
 PREFIX_TICKER    = os.getenv("MINIO_PREFIX_TICKER", "silver/ticker/")
 PREFIX_TRADES    = os.getenv("MINIO_PREFIX_TRADES", "silver/trades/")
 
-SPARK_APP_NAME   = os.getenv("SPARK_APP_NAME", "CryptoDW-Spark-ETL-v1.4.0")
+# ── CSV Benchmark layout — mirror local DATA_SPLIT/<size>/ → MinIO raw/<size>/ ──
+# Tất cả file CSV nằm phẳng trong cùng một folder; phân biệt qua filename pattern.
+PREFIX_CSV_RAW      = os.getenv("MINIO_PREFIX_CSV_RAW", "DATA_SPLIT/2GB/")
+CSV_FILENAME_KLINES = "klines_1m_*.csv"      # 1 file per dataset
+CSV_FILENAME_TICKER = "ticker_24h_*.csv"     # 1 file per dataset
+CSV_GLOB_TRADES     = "trades_*_*d.csv"      # N files per dataset (1 per symbol)
+
+SPARK_APP_NAME   = os.getenv("SPARK_APP_NAME", "CryptoDW-Spark-ETL-v1.5.0-csv-bench")
 
 def now_iso():
     from datetime import datetime, timezone
