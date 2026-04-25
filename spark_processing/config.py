@@ -81,7 +81,7 @@ PREFIX_TRADES    = os.getenv("MINIO_PREFIX_TRADES", "silver/trades/")
 PREFIX_CSV_RAW      = os.getenv("MINIO_PREFIX_CSV_RAW", "DATA_SPLIT/2GB/")
 CSV_FILENAME_KLINES = "klines_1m_*.csv"      # 1 file per dataset
 CSV_FILENAME_TICKER = "ticker_24h_*.csv"     # 1 file per dataset
-CSV_GLOB_TRADES     = "trades_*_*d.csv"      # N files per dataset (1 per symbol)
+CSV_GLOB_TRADES     = "trades_*USDT_*d.csv"  # N files per dataset (1 per symbol); excludes metadata files like trades_symbols_matched.csv
 
 SPARK_APP_NAME   = os.getenv("SPARK_APP_NAME", "CryptoDW-Spark-ETL-v1.5.0-csv-bench")
 
