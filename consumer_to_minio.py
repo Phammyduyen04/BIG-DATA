@@ -1,13 +1,13 @@
 """
-Redpanda → MinIO Consumer
-===========================
+Redpanda → MinIO Consumer (v1.2.1)
+==================================
 Subscribes to 3 Redpanda topics, batches messages in memory,
-and flushes them as JSON Lines files to MinIO.
+and flushes them as Bronze (JSON) and Silver (Parquet) files to MinIO.
 
 Topics consumed:
-  - binance.kline.1m.raw  → raw/klines/interval=1m/date=.../symbol=.../hour=.../part-XXXXX.json
-  - binance.ticker.raw    → raw/ticker/date=.../symbol=.../hour=.../part-XXXXX.json
-  - binance.trade.raw     → raw/trades/date=.../symbol=.../hour=.../part-XXXXX.json
+  - binance.kline.1m.raw  → bronze/klines/interval=1m/... and silver/klines/interval=1m/...
+  - binance.ticker.raw    → bronze/ticker/... and silver/ticker/...
+  - binance.trade.raw     → bronze/trades/... and silver/trades/...
 
 Configuration via .env:
   REDPANDA_BROKERS, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY,
@@ -25,6 +25,9 @@ import time
 import signal
 import logging
 import threading
+import pyarrow as pa
+import pyarrow.parquet as pq
+from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -33,6 +36,8 @@ import boto3
 from botocore.config import Config as BotoConfig
 from kafka import KafkaConsumer
 
+from silver_schema import SILVER_PREFIX_MAP, coerce_numeric_fields_to_string
+
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -40,7 +45,7 @@ if sys.stdout.encoding != "utf-8":
 load_dotenv()
 
 REDPANDA_BROKERS = os.getenv("REDPANDA_BROKERS", "localhost:19092")
-GROUP_ID         = "minio-consumer-group"
+GROUP_ID         = os.getenv("KAFKA_GROUP_ID", "minio-consumer-group-v2")
 
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
@@ -50,6 +55,8 @@ MINIO_SECURE     = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
 BATCH_SIZE              = int(os.getenv("BATCH_SIZE", "500"))
 FLUSH_INTERVAL_SECONDS  = int(os.getenv("FLUSH_INTERVAL_SECONDS", "60"))
+# INGESTION_MODE: DUAL, BRONZE_ONLY, SILVER_ONLY
+INGESTION_MODE          = os.getenv("INGESTION_MODE", "DUAL").upper()
 
 TOPICS = [
     "binance.kline.1m.raw",
@@ -57,11 +64,11 @@ TOPICS = [
     "binance.trade.raw",
 ]
 
-# Topic → MinIO prefix mapping
-TOPIC_PREFIX_MAP = {
-    "binance.kline.1m.raw": "raw/klines/interval=1m",
-    "binance.ticker.raw":   "raw/ticker",
-    "binance.trade.raw":    "raw/trades",
+# Bronze Prefix Mapping (Legacy JSON)
+BRONZE_PREFIX_MAP = {
+    "binance.kline.1m.raw": "bronze/klines/interval=1m",
+    "binance.ticker.raw":   "bronze/ticker",
+    "binance.trade.raw":    "bronze/trades",
 }
 
 LOG_FILE = "logs/consumer_minio.log"
@@ -131,6 +138,7 @@ class BufferManager:
         # Last flush time per buffer key
         self._last_flush: dict[tuple, float] = defaultdict(time.time)
         self._lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=20)
 
         # Stats
         self.total_flushed  = 0
@@ -138,14 +146,13 @@ class BufferManager:
         self.total_files    = 0
 
     def add(self, topic: str, message: dict):
-        """Add a message to the appropriate buffer."""
-        msg = self._restore_contract(topic, message)
+        """Add a message to the appropriate buffer with explicit timestamping."""
+        msg, event_ts_ms = self._restore_contract(topic, message)
 
-        symbol   = msg.get("symbol", "UNKNOWN")
-        event_ts = msg.get("time") or msg.get("event_time") or int(time.time() * 1000)
+        symbol = msg.get("symbol", "UNKNOWN")
 
-        # Derive date and hour from event time
-        dt = datetime.fromtimestamp(event_ts / 1000, tz=timezone.utc)
+        # Derive date and hour using the explicitly normalized MS timestamp
+        dt = datetime.fromtimestamp(event_ts_ms / 1000, tz=timezone.utc)
         date_str = dt.strftime("%Y-%m-%d")
         hour_str = dt.strftime("%H")
 
@@ -155,11 +162,9 @@ class BufferManager:
             self._buffers[key].append(msg)
             self.total_messages += 1
 
-            # Initialize last_flush if new key
             if key not in self._last_flush:
                 self._last_flush[key] = time.time()
 
-            # Check if we should flush
             buf_len = len(self._buffers[key])
             elapsed = time.time() - self._last_flush[key]
 
@@ -173,31 +178,45 @@ class BufferManager:
             for key in keys:
                 if self._buffers[key]:
                     self._flush_buffer(key)
+        
+        log.info("Waiting for all background uploads to complete...")
+        self._executor.shutdown(wait=True)
 
     def _flush_buffer(self, key: tuple):
-        """Flush one buffer to MinIO. Must be called with lock held."""
+        """Flush one buffer to MinIO (Bronze/Silver). Must be called with lock held."""
         topic, symbol, date_str, hour_str = key
         messages = self._buffers.pop(key, [])
         if not messages:
             return
 
-        # Increment part counter
         self._part_counters[key] += 1
         part_num = self._part_counters[key]
+        self._last_flush[key] = time.time()
+        
+        # Offload to executor for concurrent processing
+        self._executor.submit(self._execute_flush, key, messages, part_num)
 
-        # Build object key
-        prefix = TOPIC_PREFIX_MAP.get(topic, f"raw/{topic}")
-        object_key = (
-            f"{prefix}/date={date_str}/symbol={symbol}/"
-            f"hour={hour_str}/part-{part_num:05d}.json"
-        )
+    def _execute_flush(self, key: tuple, messages: list[dict], part_num: int):
+        """Actual I/O operation performed in a separate thread."""
+        if INGESTION_MODE in ("DUAL", "BRONZE_ONLY"):
+            self._flush_bronze(key, messages, part_num)
 
-        # Build JSON Lines content
+        if INGESTION_MODE in ("DUAL", "SILVER_ONLY"):
+            self._flush_silver(key, messages, part_num)
+        
+        with self._lock:
+            self.total_flushed += len(messages)
+
+    def _flush_bronze(self, key: tuple, messages: list[dict], part_num: int):
+        """Standard JSON Lines flush to Bronze layer."""
+        topic, symbol, date_str, hour_str = key
+        prefix = BRONZE_PREFIX_MAP.get(topic, f"bronze/{topic}")
+        object_key = f"{prefix}/date={date_str}/symbol={symbol}/hour={hour_str}/part-{part_num:05d}.json"
+
         lines = [json.dumps(msg, default=str) for msg in messages]
         content = "\n".join(lines) + "\n"
         content_bytes = content.encode("utf-8")
 
-        # Upload to MinIO
         try:
             self.s3_client.upload_fileobj(
                 Fileobj=io.BytesIO(content_bytes),
@@ -205,18 +224,34 @@ class BufferManager:
                 Key=object_key,
                 ExtraArgs={"ContentType": "application/x-ndjson"},
             )
-            self.total_flushed += len(messages)
             self.total_files += 1
-            self._last_flush[key] = time.time()
-
-            log.info(
-                f"[Flush] {object_key}  |  {len(messages)} msgs  |  "
-                f"{len(content_bytes)/1024:.1f} KB"
-            )
+            log.info(f"[Bronze] {object_key} | {len(messages)} msgs")
         except Exception as e:
-            log.error(f"[MinIO Error] Failed to upload {object_key}: {e}")
-            # Put messages back into buffer so they're not lost
-            self._buffers[key] = messages + self._buffers.get(key, [])
+            log.error(f"[Bronze Error] {object_key}: {e}")
+
+    def _flush_silver(self, key: tuple, messages: list[dict], part_num: int):
+        """Optimized Parquet flush to Silver layer."""
+        topic, symbol, date_str, hour_str = key
+        prefix = SILVER_PREFIX_MAP.get(topic, f"silver/{topic}")
+        object_key = f"{prefix}/date={date_str}/symbol={symbol}/hour={hour_str}/part-{part_num:05d}.parquet"
+
+        try:
+            coerce_numeric_fields_to_string(topic, messages)
+            table = pa.Table.from_pylist(messages)
+            buf = io.BytesIO()
+            pq.write_table(table, buf, compression='snappy')
+            content_bytes = buf.getvalue()
+
+            self.s3_client.upload_fileobj(
+                Fileobj=io.BytesIO(content_bytes),
+                Bucket=self.bucket,
+                Key=object_key,
+                ExtraArgs={"ContentType": "application/x-parquet"},
+            )
+            self.total_files += 1
+            log.info(f"[Silver] {object_key} | {len(messages)} msgs | {len(content_bytes)/1024:.1f} KB")
+        except Exception as e:
+            log.error(f"[Silver Error] {object_key}: {e}")
 
     def stats_summary(self) -> str:
         with self._lock:
@@ -228,15 +263,17 @@ class BufferManager:
             f"files={self.total_files:,}"
         )
 
-    def _restore_contract(self, topic: str, msg: dict) -> dict:
+    def _restore_contract(self, topic: str, msg: dict) -> tuple[dict, int]:
         """
-        Storage Contract Guard: Translates internal collector fields (snake_case)
-        back to the original Binance/Downstream Spark ETL expectations (camelCase/Specific names).
+        Storage Contract Guard: Topic-specific timestamp normalization and field mapping.
+        Returns (mapped_message, timestamp_ms).
         """
         m = msg.copy()
+        ts_ms = None
         
         if topic == "binance.ticker.raw":
-            # Map snake_case -> camelCase expected by fact_ticker_24h_snapshots ETL
+            # Ticker: Use 'event_time' (E) for partitioning
+            ts_ms = m.get("event_time") or m.get("E")
             mapping = {
                 "price_change":       "priceChange",
                 "price_change_pct":   "priceChangePercent",
@@ -251,23 +288,28 @@ class BufferManager:
                 "low_price":          "lowPrice",
                 "volume":             "volume",
                 "quote_volume":       "quoteVolume",
-                "num_trades":         "count", # Critical: match etl_ticker_24h.py
+                "num_trades":         "count",
             }
             for old, new in mapping.items():
-                if old in m:
-                    m[new] = m.pop(old)
+                if old in m: m[new] = m.pop(old)
                     
         elif topic == "binance.kline.1m.raw":
-            # Map specific kline fields
+            # Kline: Use 'open_time' (t) for partitioning
+            ts_ms = m.get("open_time") or m.get("t")
             if "taker_buy_quote_volume" in m:
                 m["taker_buy_quote_vol"] = m.pop("taker_buy_quote_volume")
         
         elif topic == "binance.trade.raw":
-            # Map event_time -> time as expected by etl_trades.py
+            # Trade: Use 'event_time' (E) or 'time' (T) for partitioning
+            ts_ms = m.get("event_time") or m.get("time") or m.get("E") or m.get("T")
             if "event_time" in m and "time" not in m:
                 m["time"] = m.pop("event_time")
         
-        return m
+        # Explicit unit check: fallback to current time if missing
+        if ts_ms is None:
+            ts_ms = int(time.time() * 1000)
+        
+        return m, int(ts_ms)
 # ───────────────────────────────────────────────────────────────
 
 
@@ -304,6 +346,7 @@ def main():
     log.info(f"  MinIO bucket   : {MINIO_BUCKET}")
     log.info(f"  Batch size     : {BATCH_SIZE}")
     log.info(f"  Flush interval : {FLUSH_INTERVAL_SECONDS}s")
+    log.info(f"  Ingestion Mode : {INGESTION_MODE}")
     log.info("=" * 60)
 
     # Init MinIO
@@ -327,6 +370,9 @@ def main():
         auto_offset_reset="earliest",
         enable_auto_commit=True,
         auto_commit_interval_ms=5000,
+        # Resilience tuning
+        session_timeout_ms=60000,
+        max_poll_interval_ms=600000, # 10 mins for heavy writes
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
         key_deserializer=lambda x: x.decode("utf-8") if x else None,
         consumer_timeout_ms=-1,
@@ -352,10 +398,17 @@ def main():
     flush_thread.start()
 
     # Consume loop
+    MAX_PENDING = 500000
     try:
         for message in consumer:
             if shutdown_event.is_set():
                 break
+
+            # Backpressure: Throttle if pending messages in memory exceed limit
+            while (buffer_mgr.total_messages - buffer_mgr.total_flushed) > MAX_PENDING:
+                log.warning(f"[Backpressure] {buffer_mgr.total_messages - buffer_mgr.total_flushed} messages pending. Pausing poll for 5s...")
+                time.sleep(5)
+                if shutdown_event.is_set(): break
 
             topic = message.topic
             value = message.value

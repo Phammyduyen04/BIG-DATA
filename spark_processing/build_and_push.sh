@@ -5,7 +5,7 @@
 # ============================================================
 
 IMAGE_NAME="huytrongbeou1310/bigdata_spark_postgresql"
-VERSION="v1.1.2"
+VERSION="v1.5.0-csv-bench"
 
 echo ">>> [ISOLATED BUILD] Building Docker image: $IMAGE_NAME:$VERSION..."
 # Context is the current folder (spark_processing/)

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+spec:
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              spark-role: executor
+          topologyKey: kubernetes.io/hostname
+  containers:
+    - name: spark-kubernetes-executor
+      envFrom:
+        - configMapRef:
+            name: etl-config
+        - secretRef:
+            name: etl-secrets

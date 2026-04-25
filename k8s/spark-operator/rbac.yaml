@@ -1,0 +1,58 @@
+# ============================================================
+# RBAC: Spark Operator Pattern
+# Namespace: spark-etl
+#
+# What changed vs k8s/rbac.yaml (native spark-submit pattern):
+#   - ServiceAccount name kept identical (spark-job-sa) so image
+#     entrypoint and SparkApplication spec both reference the same SA.
+#   - Role expanded: driver pod needs to create/delete executor pods
+#     and headless services for pod-to-pod discovery.
+#   - Removed: batch/jobs RBAC (no longer needed — operator manages lifecycle).
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spark-etl
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark-job-sa
+  namespace: spark-etl
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-driver-role
+  namespace: spark-etl
+rules:
+  # Driver creates/manages executor pods
+  - apiGroups: [""]
+    resources: [pods, pods/log]
+    verbs: [get, list, watch, create, delete, deletecollection, update, patch]
+  # Driver creates headless services for executor discovery
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, watch, create, delete, update, patch]
+  # Driver reads ConfigMap/Secret for dynamic config (optional but safe)
+  - apiGroups: [""]
+    resources: [configmaps, secrets]
+    verbs: [get, list, watch]
+  # Spark operator status updates require PVC access if dynamic allocation used
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-driver-role-binding
+  namespace: spark-etl
+subjects:
+  - kind: ServiceAccount
+    name: spark-job-sa
+    namespace: spark-etl
+roleRef:
+  kind: Role
+  name: spark-driver-role
+  apiGroup: rbac.authorization.k8s.io
