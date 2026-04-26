@@ -87,7 +87,10 @@ def _delete_with_retry(s3, bucket, key, max_attempts=5):
             time.sleep(wait)
 
 
-def _upload_one(s3, local_path, bucket, key, transfer_cfg):
+def _upload_one(cfg, local_path, bucket, key, transfer_cfg):
+    # Mỗi thread tạo S3 client riêng → kube-proxy phân bổ đều ra 3 MinIO pods
+    # thay vì tất cả dồn vào 1 pod khi dùng chung connection pool
+    s3 = _make_s3(cfg)
     s3.upload_file(local_path, bucket, key, Config=transfer_cfg)
     return key
 
@@ -106,14 +109,11 @@ def upload_dataset(cfg, dataset, data_root, workers=4):
     prefix = f"DATA_SPLIT/{dataset}"
     total_bytes = sum(os.path.getsize(os.path.join(local_dir, f)) for f in files)
 
-    # max_concurrency=4 và workers=4: tránh SlowDownWrite trên MinIO 3-node
-    # (8×8=64 concurrent writes trước đây quá tải erasure coding quorum)
     transfer_cfg = TransferConfig(
         multipart_threshold=64 * 1024 * 1024,
         multipart_chunksize=64 * 1024 * 1024,
         max_concurrency=4,
     )
-    s3 = _make_s3(cfg)
 
     print(f"  [upload] {len(files)} files  {total_bytes/1e6:.1f} MB  -> s3://{bucket}/{prefix}/")
     t_start = time.monotonic()
@@ -121,7 +121,7 @@ def upload_dataset(cfg, dataset, data_root, workers=4):
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(
-                _upload_one, s3,
+                _upload_one, cfg,
                 os.path.join(local_dir, fname),
                 bucket,
                 f"{prefix}/{fname}",
@@ -139,6 +139,7 @@ def upload_dataset(cfg, dataset, data_root, workers=4):
                 print(f"  [upload]   {done}/{len(files)} files  ({speed:.1f} MB/s est.) ...")
 
     # HEAD fence trên file cuối để đảm bảo flush
+    s3 = _make_s3(cfg)
     s3.head_object(Bucket=bucket, Key=f"{prefix}/{files[-1]}")
 
     t1 = time.monotonic() - t_start
