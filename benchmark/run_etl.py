@@ -244,14 +244,27 @@ def patch_configmap(dataset, namespace):
 
 
 def delete_old_job(namespace):
+    # Xóa job (submitter pod)
     subprocess.run(
         ["kubectl", "delete", "job", "spark-etl-submitter",
          "-n", namespace, "--ignore-not-found"],
         capture_output=True,
     )
-    print(f"  [k8s] Old job deleted (or not found).")
-    # Chờ pod cũ biến mất để tránh wait_for_submitter_pod nhặt nhầm pod cũ
-    deadline = time.monotonic() + 60
+    # Xóa driver pod còn sót từ lần submit trước (Spark không tự dọn)
+    subprocess.run(
+        ["kubectl", "delete", "pods", "-n", namespace,
+         "-l", "spark-role=driver", "--ignore-not-found"],
+        capture_output=True,
+    )
+    # Xóa executor pod còn sót
+    subprocess.run(
+        ["kubectl", "delete", "pods", "-n", namespace,
+         "-l", "spark-role=executor", "--ignore-not-found"],
+        capture_output=True,
+    )
+    print(f"  [k8s] Old job + driver/executor pods deleted.")
+    # Chờ tất cả Spark pods biến mất trước khi submit mới
+    deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
         out, _ = _kubectl(
             ["get", "pods", "-n", namespace,
@@ -259,7 +272,13 @@ def delete_old_job(namespace):
              "-o", "jsonpath={.items[*].metadata.name}"],
             capture=True,
         )
-        if not out.strip():
+        out2, _ = _kubectl(
+            ["get", "pods", "-n", namespace,
+             "-l", "spark-role=driver",
+             "-o", "jsonpath={.items[*].metadata.name}"],
+            capture=True,
+        )
+        if not out.strip() and not out2.strip():
             break
         time.sleep(3)
 
