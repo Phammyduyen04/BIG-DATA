@@ -26,6 +26,7 @@ import re
 import statistics
 import subprocess
 import sys
+import threading
 import time
 
 CHECKPOINT_PATH = os.path.expanduser("~/.etl_checkpoint.json")
@@ -249,6 +250,18 @@ def delete_old_job(namespace):
         capture_output=True,
     )
     print(f"  [k8s] Old job deleted (or not found).")
+    # Chờ pod cũ biến mất để tránh wait_for_submitter_pod nhặt nhầm pod cũ
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        out, _ = _kubectl(
+            ["get", "pods", "-n", namespace,
+             "-l", "job-name=spark-etl-submitter",
+             "-o", "jsonpath={.items[*].metadata.name}"],
+            capture=True,
+        )
+        if not out.strip():
+            break
+        time.sleep(3)
 
 
 def apply_job(job_yaml, namespace):
@@ -274,12 +287,11 @@ def wait_for_submitter_pod(namespace, timeout=120) -> str:
     raise TimeoutError(f"Submitter pod khong xuat hien sau {timeout}s")
 
 
-def stream_and_wait_logs(pod, namespace, log_path):
-    """Stream logs từ submitter pod → màn hình + file. Block cho đến khi pod xong."""
+def _stream_logs_bg(pod, namespace, log_path, stop_event):
+    """Thread: stream kubectl logs → stdout + file cho đến khi pod xong hoặc stop_event."""
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    cmd = ["kubectl", "logs", "-n", namespace, pod, "-f",
-           "--pod-running-timeout=120s"]
-    print(f"  [log] {log_path}")
+    # Không dùng --pod-running-timeout (không hỗ trợ trên kubectl cũ)
+    cmd = ["kubectl", "logs", "-n", namespace, pod, "-f"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     with open(log_path, "w", encoding="utf-8", errors="replace") as lf:
         for raw_line in proc.stdout:
@@ -287,12 +299,16 @@ def stream_and_wait_logs(pod, namespace, log_path):
             sys.stdout.write(line)
             sys.stdout.flush()
             lf.write(line)
+            if stop_event.is_set():
+                break
+    proc.terminate()
     proc.wait()
 
 
-def get_job_final_status(namespace, retries=10, delay=3) -> str:
-    """Trả về 'succeeded' | 'failed' | 'unknown' sau khi pod đã terminate."""
-    for _ in range(retries):
+def _poll_job_status(namespace, timeout, interval=15) -> str:
+    """Poll job status mỗi interval giây cho đến khi succeeded/failed/timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         out_s, _ = _kubectl(
             ["get", "job", "spark-etl-submitter", "-n", namespace,
              "-o", "jsonpath={.status.succeeded}"],
@@ -305,10 +321,10 @@ def get_job_final_status(namespace, retries=10, delay=3) -> str:
         )
         if out_s.strip() == "1":
             return "succeeded"
-        if out_f.strip() and int(out_f.strip() or "0") >= 1:
+        if int(out_f.strip() or "0") >= 1:
             return "failed"
-        time.sleep(delay)
-    return "unknown"
+        time.sleep(interval)
+    return "timeout"
 
 
 # -- CSV logging ----------------------------------------------------------------
@@ -420,6 +436,8 @@ def parse_args():
                    help="Thu muc luu ket qua (default: <script_dir>/results)")
     p.add_argument("--pod-timeout",  type=int, default=120,
                    help="Giay cho submitter pod xuat hien (default 120)")
+    p.add_argument("--job-timeout",  type=int, default=7200,
+                   help="Giay toi da cho 1 run hoan thanh (default 7200=2h)")
     return p.parse_args()
 
 
@@ -541,31 +559,47 @@ def main():
                         print(f"  [pg] WARNING truncate failed: {e}")
 
                 t_start = 0.0
+                stop_event = threading.Event()
+                log_thread = None
                 try:
                     patch_configmap(dataset, ns)
                     delete_old_job(ns)
-                    time.sleep(2)
                     apply_job(args.job_yaml, ns)
                     t_start = time.monotonic()
 
                     pod = wait_for_submitter_pod(ns, timeout=args.pod_timeout)
-                    stream_and_wait_logs(pod, ns, log_path)
 
+                    # Stream logs trong background thread (không block)
+                    print(f"  [log] {log_path}")
+                    log_thread = threading.Thread(
+                        target=_stream_logs_bg,
+                        args=(pod, ns, log_path, stop_event),
+                        daemon=True,
+                    )
+                    log_thread.start()
+
+                    # Poll job status (authoritative) — đây mới là điều kiện thoát
+                    job_st = _poll_job_status(ns, timeout=args.job_timeout)
                     t2 = time.monotonic() - t_start
-                    job_st = get_job_final_status(ns)
+
+                    stop_event.set()
+                    log_thread.join(timeout=10)
 
                     if job_st == "succeeded":
-                        print(f"  -> T2 = {t2:.2f}s  [succeeded]")
+                        print(f"\n  -> T2 = {t2:.2f}s  [succeeded]")
                         status = "ok"
                         notes  = ""
                         break
                     else:
-                        print(f"  -> {job_st.upper()}  T2={t2:.2f}s")
+                        print(f"\n  -> {job_st.upper()}  T2={t2:.2f}s")
                         notes = f"job {job_st}"
 
                 except Exception as e:
                     if t_start:
                         t2 = time.monotonic() - t_start
+                    if stop_event and log_thread:
+                        stop_event.set()
+                        log_thread.join(timeout=5)
                     notes = str(e)
                     print(f"  -> ERROR: {e}")
 
