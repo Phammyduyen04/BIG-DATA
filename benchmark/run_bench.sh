@@ -14,6 +14,8 @@ export MINIO_BUCKET="binance"
 DATA_ROOT="d:/HK2_2025-2026/DLL/Project/DATA_SPLIT"
 WORKERS=4
 RUNS=5
+RUN_RETRIES=2     # số lần retry mỗi run nếu bị lỗi
+RETRY_DELAY=90    # giây chờ giữa các lần retry (đủ cho MinIO reconnect)
 
 # -- Đường dẫn ----------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,4 +54,6 @@ python -u benchmark/bench_upload.py \
     --data-root "$DATA_ROOT" \
     --runs "$RUNS" \
     --workers "$WORKERS" \
+    --run-retries "$RUN_RETRIES" \
+    --retry-delay "$RETRY_DELAY" \
     "$@"

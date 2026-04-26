@@ -416,6 +416,10 @@ def parse_args():
                    help="Folder to store CSV logs (default: benchmark/results/)")
     p.add_argument("--clean",       action="store_true",
                    help="Xoa sach toan bo DATA_SPLIT/ tren MinIO (can xac nhan 'yes')")
+    p.add_argument("--run-retries", type=int, default=2,
+                   help="So lan retry neu upload bi loi (default: 2)")
+    p.add_argument("--retry-delay", type=int, default=90,
+                   help="Thoi gian cho giua cac lan retry, giay (default: 90)")
     return p.parse_args()
 
 
@@ -488,6 +492,7 @@ def main():
     print(f" Datasets: {datasets}")
     print(f" MinIO:    {cfg['minio_endpoint']}  bucket={cfg['minio_bucket']}")
     print(f" Mode:     run 1-{args.runs-1} upload+delete | run {args.runs} upload+KEEP")
+    print(f" Retry:    {args.run_retries} lan / run, cho {args.retry_delay}s giua cac lan retry")
     if resuming:
         n_done = sum(len(v) for v in checkpoint.get("completed_runs", {}).values())
         n_total = len(datasets) * args.runs
@@ -530,16 +535,28 @@ def main():
             notes  = ""
             t1 = n_files = n_bytes = 0
 
-            try:
-                t1, n_files, n_bytes = upload_dataset(
-                    cfg, dataset, args.data_root, workers=args.workers
-                )
-                mb_s = (n_bytes / 1e6) / t1
-                print(f"  -> T1 = {t1:.2f}s  ({mb_s:.1f} MB/s)")
-            except Exception as e:
-                status = "error"
-                notes  = str(e)
-                print(f"  -> ERROR: {e}")
+            for attempt in range(args.run_retries + 1):
+                try:
+                    t1, n_files, n_bytes = upload_dataset(
+                        cfg, dataset, args.data_root, workers=args.workers
+                    )
+                    mb_s = (n_bytes / 1e6) / t1
+                    if attempt > 0:
+                        print(f"  -> Retry {attempt} THANH CONG")
+                    print(f"  -> T1 = {t1:.2f}s  ({mb_s:.1f} MB/s)")
+                    status = "ok"
+                    notes  = ""
+                    break
+                except Exception as e:
+                    err_msg = str(e)
+                    if attempt < args.run_retries:
+                        print(f"  -> ERROR (lan {attempt+1}): {err_msg}")
+                        print(f"  -> Retry {attempt+1}/{args.run_retries} sau {args.retry_delay}s ...")
+                        time.sleep(args.retry_delay)
+                    else:
+                        status = "error"
+                        notes  = err_msg
+                        print(f"  -> ERROR (het {args.run_retries} lan retry): {err_msg}")
 
             row = {
                 "dataset":         dataset,
